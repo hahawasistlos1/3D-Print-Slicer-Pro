@@ -1,2 +1,79 @@
-# 3D-Print-Slicer-Pro
-Windows-Slicer für 3D-Modelle mit Farbtrennung, Druckteilen und Verbindern.
+# 3D Print Slicer Pro · Vorschau 0.11.0
+
+Lokale Windows-Desktopanwendung in C#/.NET 10 und WPF, mit einem separaten, mitgelieferten Geometrieprozess auf Basis von Manifold. Das Projekt enthält reale Schnitte, Verschlussflächen, integrierte/separate Verbinder, Bohrungen und exportierbare STL-Dateien. Die Oberfläche orientiert sich an der bereitgestellten dunkelblauen/cyanfarbenen Referenz.
+
+**Dies ist eine funktionierende Vorschau, noch keine vollständige Umsetzung aller Anforderungen des Master-Prompts.** Neu sind Steckclips mit berechneter Armdehnung und Außenschrauben mit geometrisch passendem Innengewinde. Die adaptive Schnittplanung bleibt eine Heuristik. Belastungsnachweise, allgemeine Montagepfade mit Drehungen und eine globale Wandstärkenanalyse fehlen. Neuerungen stehen in [docs/NEUERUNGEN-0.10.md](docs/NEUERUNGEN-0.10.md), der vollständige Funktionsstand in [docs/ENTWICKLUNGSSTAND.md](docs/ENTWICKLUNGSSTAND.md).
+
+## Starten
+
+- **Portable:** `artifacts/3DPrintSlicerPro-Portable.zip` vollständig in einen Ordner entpacken und `3D Print Slicer Pro.exe` starten. Alternativ die bereits entpackte EXE unter `artifacts/Portable-0.11.0/` verwenden. Den gesamten Ordner zusammenlassen.
+- **Installation:** `artifacts/3DPrintSlicerPro-Setup.exe` starten. Installiert für den aktuellen Benutzer, erstellt Desktop-/Startmenüverknüpfungen und einen Deinstallationseintrag. Keine separat installierte .NET- oder Python-Laufzeit nötig. Das Setup ist nicht digital signiert.
+- **Entwickeln:** `3DPrintSlicerPro.sln` in Visual Studio 2026 mit .NET-Desktopentwicklung öffnen. Startprojekt: `SlicerPro`.
+
+Windows 10/11 x64. Für die Anwendung ist keine Internetverbindung, Anmeldung, Cloud oder kostenpflichtige Bibliothek erforderlich. Nur die erstmalige Vorbereitung einer Entwicklungsumgebung benötigt Downloads.
+
+## Bedienung
+
+1. STL, OBJ oder 3MF laden. STL/OBJ-Zahlen werden als Millimeter interpretiert. 3MF-Einheiten werden umgerechnet. Die App löst Modellreferenzen der 3MF Production Extension innerhalb desselben Archivs auf und verarbeitet bis zu vier Millionen Dreiecke, auch nach dem Zusammenfügen.
+2. Druckerprofil oder X/Y/Z und Sicherheitsabstand je Seite einstellen.
+3. Runddübel, rechteckige Zapfen, gerade Nut/Feder oder seitlichen Schwalbenschwanz sowie integriert, separat, kombiniert oder ohne Verbinder wählen.
+4. Die adaptive Strategie oder ein Raster wählen und **Modell schneiden & Verbinder setzen** drücken. Der Fortschritt erscheint unten, **Abbrechen** beendet den isolierten Rechenprozess.
+5. Prüfbericht lesen, Teile ansehen und **Export / Druck** wählen.
+
+Die Anwendung öffnet beim Start einen **prozeduralen Demo-Drachen mit echter Geometrie**. Dieser ist nicht das Drachenmodell aus dem Referenzbild. Aus dem einzelnen Referenzbild lässt sich dessen Original-3D-Geometrie nicht übernehmen. Es werden keine festen Beispielresultate als Berechnung ausgegeben.
+
+Orange markierte Teile und Schnittstellen im Prüfbericht benötigen eine Montageprüfung. Eine erfolgreiche Netz-/Druckraumprüfung bedeutet nicht, dass alle Teile verbunden sind. Nach Änderungen der Eingaben muss vor dem STL-Export neu berechnet werden.
+
+**Geradlinige Montagewege prüfen** ist standardmäßig aktiv. Eine Freigabe gilt nur für die gespeicherte geradlinige Folge entlang XYZ oder der tatsächlichen Einschubrichtung mit vorbestückten separaten Verbindern, nicht für Drehungen, Reibung oder Festigkeit. Unter Vorschau lassen sich nachgewiesene Einsteckwege stufenlos darstellen. Die Größenautomatik ist optional und verkleinert Breite/Durchmesser und Einstecktiefe nur bis zu den Mindestmaßen unter Einstellungen; Wandreserve und Spiel bleiben erhalten.
+
+Bei **Nut und Feder** sind Breite, Länge entlang der Schnittfläche und Einstecktiefe je Seite unabhängig einstellbar. Die Federlänge bleibt bei Größenautomatik fest. Geprüft werden beide Achsenrichtungen in der Fläche. Die Nut erhält das eingestellte Spiel als Gesamtzugabe in Breite und Länge sowie axiale Zugabe. Es sind gerade, begrenzte rechteckige Segmente mit geschlossenen Nutenden, keine umlaufenden Konturverbindungen. Fehlende sichere Positionen werden im Prüfbericht gemeldet.
+
+Mit **⤾ Modell frei ausrichten** neben den manuellen Schnittoptionen lässt sich das vollständige Modell drehen: Winkel von −360 bis 360 Grad eingeben, **Vorschau aktualisieren**, dann **Ausrichtung anwenden**. Die zusätzliche Drehung erfolgt in den aktuellen Modellachsen, zuerst X, dann Y, dann Z. Anschließend liegt das Modellminimum wieder bei XYZ = 0. Druckteile und manuelle Schnitte werden zurückgesetzt; danach neu schneiden. Rückgängig/Wiederholen stellt die vorherigen berechneten Zustände während der Sitzung wieder her. Die Schnittfamilien bleiben entlang der aktuellen XYZ-Achsen; dadurch können sie schräg zur vorherigen Modelllage verlaufen. Für unabhängige Ebenen öffne **Manuelle Schnitte / Skalieren → Freie Schnittebenen bearbeiten**. Lokale Neuteilung und Zusammenfügen findest du im Kontextmenü einer Teileminiatur.
+
+Mit **Schnitt-Einstellungen → Nach Farbe trennen** werden geschlossene Farbgruppen einer 3MF-Datei zu einzelnen Druckteilen. Die Strategie übernimmt 3MF-Basismaterialien, Farbgruppen und eindeutige Filamentzuweisungen pro Körper aus Bambu Studio oder OrcaSlicer. Zu große Farbteile werden für den Druckraum weiter unterteilt. Verbinder werden innerhalb einer Farbgruppe gesetzt. Die Teilevorschau und 3MF-Einzelexporte übernehmen die Farbwerte. Aufgemalte Flächen, Texturen und Farbverläufe benötigen definierte geschlossene Volumenkörper, damit sie als eigene Teile ausgegeben werden können.
+
+Die Vorschau lässt sich mit der linken Maustaste drehen, dem Mausrad zoomen und der rechten Maustaste oder Umschalt+Ziehen verschieben. Die Kameras sind synchronisiert. Doppelklick setzt die Kamera zurück. Teile anklicken; Rechtsklick auf ein Vorschaubild bietet Ein-/Ausblenden und Einzelexport. Die Punkte-Schaltfläche öffnet Transparenz, Explosionsabstand und Montageschritte.
+
+Große Anzeigenetze werden separat vereinfacht, ohne einzelne Dreiecke auszulassen. Geschlossene Flächen, Hohlraumschalen, Durchbrüche, Volumen und Montageposition werden geprüft. Die Anzeige nennt die tatsächlichen Dreieckszahlen; Details stehen unter Vorschau. Dort lässt sich auch **Vollständige Originalnetze anzeigen** aktivieren. Wird ein Anzeigeziel innerhalb der Qualitätsgrenzen nicht erreicht, bleibt das komplette Netz erhalten und kann langsamer sein. Die vollständige Fertigungsgeometrie bleibt für Schnitt, Projekt und Export erhalten. Vorschauen werden für unveränderte Quellen während der Sitzung wiederverwendet.
+
+`Strg+O`: Modell laden. `Strg+S`: Projekt speichern. `Strg+Z`/`Strg+Y`: vorherige berechnete Projektzustände. Drag-and-drop unterstützt Modelle und `.3dps`-Projekte.
+
+Projekte enthalten die aktuelle ungeteilte, gegebenenfalls skalierte oder ausgerichtete Geometrie, Resultate und Parameter als ZIP-basiertes `.3dps`-Format. Die importierte Ausgangsdatei wird nicht überschrieben. Exportierte Teile liegen in Druckausrichtung mit Minimum XYZ = 0 vor. Der Montageplan verwendet die Montagekoordinaten des aktuell berechneten Modells.
+
+Unter **Export / Druck** lässt sich STL, OBJ oder 3MF für alle Druckteile und separaten Verbinder wählen. Jedes Teil erhält eine eigene Datei. Beim Einzelteil-Export über das Kontextmenü der Miniatur stehen dieselben Formate zur Wahl. 3MF speichert ausdrücklich Millimeter; bei STL/OBJ im Zielprogramm Millimeter wählen. Es werden Geometriedateien ohne Druckerprofile, Stützen oder G-Code ausgegeben. `Exportdateien.json` im Gesamtexport ordnet die Dateien und ihre Druckausrichtungen zu. Original und Projekt enthalten weiterhin die intern verwendete STL-Geometrie.
+
+## Bauen und prüfen
+
+```powershell
+# Nur falls runtime/ noch fehlt; benötigt 64-Bit-Python mit pip und Internet:
+.\tools\bootstrap.ps1
+
+# Kompilieren und Geometrie-/Integrationstests:
+.\tools\build.ps1
+
+# Zusätzlich portable ZIP und eigenständiges Offline-Setup erzeugen:
+.\tools\build.ps1 -Package
+```
+
+Erforderlich: .NET 10 SDK. Das eingecheckte `global.json` verwendet 10.0.403 mit Feature-Rollforward. Die Laufzeitpakete werden beim ersten Publish von NuGet bezogen; danach ist ein Build mit gefülltem Cache offline möglich. Laufzeitversionen werden vom SDK gewählt.
+
+Die Geometrietests benötigen kein pytest und verwenden die lokale Laufzeit:
+
+```powershell
+.\runtime\python.exe tests\test_geometry.py
+.\runtime\python.exe tests\test_planning.py
+.\runtime\python.exe tests\test_motion.py
+.\runtime\python.exe tests\test_tongue.py
+.\runtime\python.exe tests\test_export.py
+.\runtime\python.exe tests\test_preview.py
+.\runtime\python.exe tests\test_orientation.py
+dotnet run --project tests\SlicerPro.Integration -c Release -- (Get-Location).Path
+```
+
+Integrationstests setzen `artifacts/demo.stl` voraus, das `tools/build.ps1` automatisch erzeugt. Vor einem erneuten Build die laufende Entwicklungs-EXE schließen. Prüfprotokolle und Beispiele stehen unter `artifacts/`.
+
+## Dateien und Einstellungen
+
+`%LOCALAPPDATA%/3DPrintSlicerPro/` enthält lokale Einstellungen, Rechensitzungen und `errors.log`. Sitzungen bleiben zur Wiederherstellung und für Rückgängig erhalten; eine automatische Speicherbereinigung ist noch nicht implementiert. Zur isolierten Entwicklung kann `SLICERPRO_DATA_DIR` auf einen Testordner gesetzt werden. Nutzerprojekte werden am gewählten Speicherort abgelegt und bei der Deinstallation beibehalten.
+
+Architektur: [docs/ARCHITEKTUR.md](docs/ARCHITEKTUR.md). Dateiformat: [docs/DATEIFORMAT.md](docs/DATEIFORMAT.md). Freie Bibliotheken und Lizenztexte: [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md).

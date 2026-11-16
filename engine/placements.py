@@ -1,0 +1,48 @@
+"""User-defined connector positions tied to a previously computed interface."""
+import numpy as np
+from manual_planes import vector
+
+
+def selected_positions(settings, candidates, parts):
+    raw = settings.get('placements', [])
+    if not isinstance(raw,list) or len(raw)>4096:
+        raise ValueError('Ungültige Liste manueller Verbinderpositionen.')
+    selected={}
+    for item in raw:
+        if not isinstance(item,dict):
+            raise ValueError('Ungültige manuelle Verbinderposition.')
+        name=item.get('interfaceId')
+        if not isinstance(name,str) or not name.startswith('S') or not name[1:].isascii() or not name[1:].isdigit() or len(name)>10:
+            raise ValueError('Manuelle Verbinderposition benötigt eine Schnittstelle.')
+        index=int(name[1:])-1
+        if not 0<=index<len(candidates):
+            raise ValueError(f'{name}: Schnittstelle der manuellen Position ist nicht mehr vorhanden.')
+        a,b,axis,offset,_,rotation,_=candidates[index]
+        if parts[a]['key']!=item.get('aKey') or parts[b]['key']!=item.get('bKey'):
+            raise ValueError(f'{name}: Die Teile für die manuelle Position haben sich geändert.')
+        center=vector(item.get('center'))
+        if rotation is not None:
+            center=rotation@center
+        if abs(center[axis]-offset)>1e-4:
+            raise ValueError(f'{name}: Manuelle Position liegt außerhalb der Schnittfläche. XYZ-Koordinaten prüfen.')
+        center[axis]=offset
+        group=selected.setdefault(index,[])
+        if len(group)>=8:
+            raise ValueError(f'{name}: Bis zu acht manuelle Verbinder pro Schnittstelle.')
+        group.append(center)
+    return selected
+
+
+def trials(settings, axis, offset, region, requested, sizes, candidates, face_length):
+    """Try requested centers in order, including both tangent alignments."""
+    for slot, fixed in enumerate(requested or [None]):
+        for diameter,depth in sizes(settings):
+            sized=dict(settings,diameter=diameter,depth=depth,rectHeight=settings['rectHeight']*diameter/settings['diameter'])
+            length=face_length(sized)
+            if fixed is None:
+                proposals=candidates(region,axis,offset,sized)
+            else:
+                tangents=(None,) if length is None else ((axis+1)%3,(axis+2)%3)
+                proposals=((fixed,tangent) for tangent in tangents)
+            for center,tangent in proposals:
+                yield slot,sized,center,tangent,length

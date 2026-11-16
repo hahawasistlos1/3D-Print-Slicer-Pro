@@ -1,0 +1,9 @@
+# Version 0.8
+
+- **Manuelle Schnitte / Skalieren → Freie Schnittebenen bearbeiten** öffnet die 3D-Ansicht mit der Liste der manuellen Bearbeitungen. Ebene durch einen Punkt, Richtung in der XY-Ebene und Neigung festlegen. Alt + Klick setzt den Punkt auf die Modelloberfläche. Die transparente Fläche zeigt die Lage der Ebene im Modellrahmen. Berechnet wird auf dem vollständigen Netz.
+- Über das Kontextmenü einer Teileminiatur lässt sich ein Teil lokal neu teilen oder mit weiteren Teilen zusammenfügen. Ein zusammengefügter Körper muss zusammenhängen und in den Druckraum passen. Verbinder werden an den verbleibenden Schnittstellen neu erzeugt.
+- Die manuellen Bearbeitungen laufen in Listenreihenfolge nach der automatischen Teilung. Das gewählte lokale Ziel stammt aus dem zuletzt berechneten Ergebnis. Wenn Änderungen am Basisplan oder an früheren Bearbeitungen dieses Ziel verändern, meldet die Berechnung den Konflikt. Die bisherigen Ergebnisse bleiben erhalten.
+- Freie Schnittflächen erhalten echte Kappen und passende Verbinder. Die geradlinige Montageprüfung berücksichtigt die tatsächliche Richtung des Verbinders, auch wenn sie schräg zu XYZ liegt.
+- Rechteckige Zapfen haben unabhängig einstellbare Breite und Höhe. Höhe 0 übernimmt die Breite. Bei Größenautomatik wird die Höhe im selben Verhältnis wie die Breite verkleinert.
+- **Alternative Schnittpläne berechnen** vergleicht vier tatsächlich erzeugte Teilungen. Die Liste zeigt Druckbarkeit, Teilezahl, Verbindungen und den Stand der Montageprüfung. Erst die Auswahl übernimmt einen Plan. Lokale Bearbeitungen, deren Ziel in einem anderen Basisplan fehlt, werden als Konflikt ausgewiesen.
+- Die Projektdatei speichert die Reihenfolge der Bearbeitungen, die Netzgeometrie, die Zuordnungen und die Montagewege. Rückgängig und Wiederholen gelten für erfolgreich berechnete Bearbeitungen innerhalb der laufenden Sitzung.
