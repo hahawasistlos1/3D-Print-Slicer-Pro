@@ -11,6 +11,8 @@ import manifold3d as md
 from components import material_components
 
 MAX_EVALUATIONS = 1024
+MAX_CONNECTOR_PROBES = 384
+PROBES_PER_CUT = 16
 EPS_VOLUME = 1e-7
 
 
@@ -66,8 +68,10 @@ def section_quality(rotated, offset, settings, scale):
     core = inner
     if settings.get('mode', 'separate') != 'none':
         reach = settings['depth']+settings['tolerance']+settings['wall']
-        for direction in (-1, 1):
-            at_depth = rotated.slice(float(offset+direction*reach)).offset(-radius, circular_segments=16)
+        for fraction in (-1, 1, -.5, .5):
+            if core.is_empty():
+                break
+            at_depth = rotated.slice(float(offset+fraction*reach)).offset(-radius, circular_segments=16)
             core = core ^ at_depth
     core_area = max(0.0, core.area())
     has_core = core_area > max(1e-9, scale*scale*1e-12)
@@ -82,12 +86,14 @@ def section_quality(rotated, offset, settings, scale):
             'weakRegions':weak, 'connectorCoreArea':float(core_area)}
 
 
-def adaptive_partition(solid, settings, usable, max_parts, progress=lambda p,m: None):
+def adaptive_partition(solid, settings, usable, max_parts, progress=lambda p,m: None, *, probe=None, probe_used=0):
     options = capacity_options(settings, usable)
     pending = [(s, [], 0) for s in reversed(material_components(solid)) if s.volume() > EPS_VOLUME]
     leaves, selected = [], []
     evaluated = 0
     budget_reached = False
+    probe_checks=probe_cuts=0
+    probe_budget_reached=False
     model_box = bounds(solid)
     if any((np.asarray(s.bounding_box())[3:]-np.asarray(s.bounding_box())[:3]).max()>max(float(c.max()) for c in options)*max_parts for s,_,_ in pending):
         raise ValueError(f'Modellspanne erfordert mehr als {max_parts} Druckteile.')
@@ -126,7 +132,7 @@ def adaptive_partition(solid, settings, usable, max_parts, progress=lambda p,m: 
         capacity = min(options, key=lambda c: (math.prod(np.maximum(1,np.ceil(dims/c-1e-10))), sum(dims/c)))
         oversized = sorted([a for a in range(3) if dims[a] > capacity[a]+1e-6], key=lambda a:-dims[a]/capacity[a])
         proposals = []
-        for axis in oversized[:2]:
+        for axis in oversized:
             count = int(math.ceil(dims[axis]/capacity[axis]-1e-10))
             low_count = count//2
             nominal = box[axis] + dims[axis]*low_count/count
@@ -157,9 +163,23 @@ def adaptive_partition(solid, settings, usable, max_parts, progress=lambda p,m: 
         if not proposals:
             raise ValueError('Kein gültiger adaptiver Schnitt gefunden. Rasterteilung oder manuelle Ebenen verwenden.')
         candidates = []
-        # Exact splitting is more expensive than cross sections. Evaluate the
-        # best few proposals, including all resulting disconnected components.
-        for score, axis, offset, quality in sorted(proposals,key=lambda c:(c[0],c[1],c[2]))[:4]:
+        # Reserve an exact split for the best proposal on each available axis.
+        # A short list sorted only by score can contain a single axis.
+        ranked = sorted(proposals,key=lambda c:(c[0],c[1],c[2]))
+        first_per_axis = {}
+        for proposal in ranked:
+            first_per_axis.setdefault(proposal[1],proposal)
+        shortlist = [*first_per_axis.values()]
+        shortlist.extend(c for c in ranked if c is not first_per_axis[c[1]])
+        # Check the original material with a closed 3D envelope. The 2D
+        # section score can miss an internal void between sampling planes.
+        can_probe=probe is not None and MAX_CONNECTOR_PROBES-probe_used-probe_checks>=min(4,len(shortlist))*PROBES_PER_CUT
+        if probe is not None and not can_probe:
+            probe_budget_reached=True
+        found_probe=False
+        for rank,(score, axis, offset, quality) in enumerate(shortlist):
+            if rank>=4 and candidates and (not can_probe or found_probe or rank>=8):
+                break
             normal = [0,0,0]; normal[axis] = 1
             high, low = shape.split_by_plane(normal, offset)
             low_parts = [s for s in material_components(low) if s.volume() > EPS_VOLUME]
@@ -172,10 +192,21 @@ def adaptive_partition(solid, settings, usable, max_parts, progress=lambda p,m: 
             # Fragmentation is explicitly penalised so a small detail cannot
             # win merely by offering a small cutting area.
             total_score = score + 45*fragments + 7*count_estimate
+            remaining=MAX_CONNECTOR_PROBES-probe_used-probe_checks
+            if can_probe and remaining>=PROBES_PER_CUT:
+                supported,checks=probe(shape,axis,offset,PROBES_PER_CUT)
+                probe_checks+=checks
+                found_probe|=supported
+                quality={**quality,'connectorProbeFound':supported}
+                if supported:
+                    total_score-=120
+            elif can_probe:
+                probe_budget_reached=True
             candidates.append((total_score,axis,offset,quality,children))
         if not candidates:
             raise ValueError('Adaptive Schnitte erzeugen keine gültigen Teilkörper. Bitte Rasterteilung verwenden.')
         _, axis, offset, quality, children = min(candidates,key=lambda c:(c[0],c[1],c[2]))
+        probe_cuts+=int(quality.get('connectorProbeFound',False))
         face = {'axis':axis,'offset':float(offset)}
         selected.append({**face,'bounds':box.tolist(),**quality})
         for child in reversed(children):
@@ -183,7 +214,9 @@ def adaptive_partition(solid, settings, usable, max_parts, progress=lambda p,m: 
         progress(min(33,8+len(selected)//2),f'Adaptive Schnittplanung · {len(selected)} lokale Schnitte · {evaluated} Querschnitte')
     cuts = [sorted(set(c['offset'] for c in selected if c['axis']==a)) for a in range(3)]
     return leaves, cuts, {'algorithm':'adaptive-axis-v1','evaluatedPlanes':evaluated,
-                          'localCuts':selected,'budgetReached':budget_reached}
+                          'localCuts':selected,'budgetReached':budget_reached,
+                          'connectorProbeChecks':probe_checks,'connectorProbeCuts':probe_cuts,
+                          'connectorProbeBudgetReached':probe_budget_reached}
 
 
 def common_interface(a, b, axis, offset, epsilon):

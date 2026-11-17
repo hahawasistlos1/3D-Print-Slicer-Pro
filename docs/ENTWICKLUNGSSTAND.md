@@ -28,6 +28,18 @@
 | Verarbeitung | Isolierter Hintergrundprozess, JSON-Fortschritt, echter Prozessabbruch, Ergebnisse werden erst nach erfolgreichem Job übernommen |
 | Distribution | Eigenständige Offline-Portable-Version und eigener .NET-Installer mit Benutzerinstallation, Verknüpfungen und Deinstallationslogik |
 
+Version 0.11.1 kann gemeinsame ebene Flächen verschiedener Farbgruppen auf Wunsch mit Verbindern versehen. Standardisierte Dreiecksfarben können bei einer eindeutigen ebenen Zweifarbgrenze als Volumenkörper getrennt werden. Der Montageplan kennzeichnet Farbgrenzen und enthält separate Hinweise für Schrauben und Clips. Die ausführliche Dünnwandprüfung untersucht bis zu 200.000 Dreiecksmittelpunkte pro Berechnung.
+
+Version 0.11.2 prüft den Gewindeeingriff von Außenschrauben mit Kollisionsstichproben. Einzelprüfung, Kollision und Budgetgrenze stehen im Prüfbericht und Montageplan. Die geradlinige Freigabe der Teilefolge bleibt getrennt.
+
+Version 0.11.3 bietet für größere Öffnungen in einer ebenen Fläche eine erweiterte Reparatur pro Import an. Sie prüft Randlinien und vorhandene Flächen einschließlich weiterer 3MF-Komponenten. Das Projekt speichert die Anzahl der damit geschlossenen Öffnungen.
+
+Version 0.11.4 zeigt beim Bearbeiten von Verbinderpositionen die tatsächliche 3D-Kontaktfläche mit ihren Öffnungen. Klicks setzen Mittelpunkte und Änderungen können über mehrere Schnittstellen gesammelt werden. Koordinateneingabe und geometrische Validierung sind weiterhin verfügbar.
+
+Version 0.11.5 ergänzt Drehgriffe für Richtung und Neigung an freien Schnittebenen. Die Drehung behält den gewählten Punkt der Ebene bei. Die Eingabefelder stehen für genaue Winkel zur Verfügung.
+
+Version 0.11.6 bewertet mögliche adaptive Schnitte für Runddübel, rechteckige Steckverbinder und Nut und Feder anhand räumlicher Proben für Einstecktiefe und Wandreserve. Die Proben helfen bei der Auswahl der Schnitte. Die endgültige Platzierung und Montageprüfung folgen danach.
+
 ## Nicht fertig / nicht freigegeben
 
 - Die Oberfläche ist eine eigenständige Nachbildung der Referenzanordnung, **nicht pixelgetreu**. Symbole, einige Proportionen, Fensterrahmen und Miniaturdarstellung weichen ab. Das Bild wird nicht als UI-Hintergrund verwendet.
@@ -35,13 +47,13 @@
 - Steckclips und Außenschrauben erzeugen passende Geometrie. Praktische Rast- und Drehmontage bleiben offen. Außenschrauben werden separat gedruckt. Nut/Feder unterstützt gerade rechteckige Segmente mit geschlossenen Nutenden, keine umlaufende Kontur, offenen Schienen oder Hinterschneidungen.
 - Rechteckige Verbinder unterstützen unabhängige Breite und Höhe. Verbinderpositionen lassen sich pro Schnittstelle setzen. Frei vorgegebene Lasten fehlen.
 - Die adaptive Schnittplanung bewertet lokale achsenparallele Vorschläge anhand tatsächlicher Querschnitte und Fragmente. Anatomie, Lastpfade, Überhänge, Schnittflächenqualität und wenig Verschnitt werden nicht global optimiert. Weder adaptive Planung noch „wenige Rasterzellen“ garantieren die minimal mögliche Zahl zusammenhängender Druckteile.
-- Das vollständige Modell kann vor dem Schneiden frei ausgerichtet werden. Die automatische Teilung folgt den aktuellen XYZ-Achsen. Freie Zusatzebenen, lokale Neuteilung und Zusammenfügen stehen als manuelle Bearbeitungen zur Verfügung. Der Planvergleich rechnet vier Strategien mit denselben Einstellungen durch. Ein direkter 3D-Drehgriff für Ebenen fehlt.
+- Das vollständige Modell kann vor dem Schneiden frei ausgerichtet werden. Die automatische Teilung folgt den aktuellen XYZ-Achsen. Freie Zusatzebenen mit Drehgriffen, lokale Neuteilung und Zusammenfügen stehen als manuelle Bearbeitungen zur Verfügung. Der Planvergleich rechnet vier Strategien mit denselben Einstellungen durch.
 - Die Dünnwand-Stichprobe arbeitet mit begrenzten Messstrahlen je Körper. Die Überhangfläche ist ein geometrischer Winkelindikator. Eine lückenlose Wandstärken- und Selbstüberschneidungsprüfung, Festigkeitsanalyse sowie allgemeine Montagepfade mit Drehungen oder Gruppenbewegungen fehlen.
 - Ein Verbinder kann geometrisch passen, während andere Teile das Einschieben blockieren. Version 0.3 prüft durchgehende gerade Wege entlang XYZ und seit 0.8 entlang der Verbinderrichtung einschließlich Dübelvorbestückung. Nur vollständig geprüfte Abläufe erhalten eine solche Freigabe. Bei offenen Fällen bleibt die Folge ein geometrischer Vorschlag. Unterschiedliche Einsteckachsen können außerhalb der unterstützten Strategie liegen.
 - Dünne oder hohle Stellen können keine sichere Verbinderposition liefern. Solche Stellen werden ausgelassen und im Prüfbericht gemeldet. Eine druckraumtaugliche Ausgabe ist deshalb noch keine vollständig montierbare Baugruppe.
-- Beim Import können kleine konvexe Öffnungen in ebenen Flächen, eindeutige mikroskopische Nahtspalten und widerspruchsfrei ausrichtbare Flächennormalen repariert werden. Größere oder geometrisch mehrdeutige Defekte werden mit konkretem Befund gemeldet. Schnitt, Vorschau und Export verwenden weiterhin die strikte Prüfung. 3MF-Importe bewahren die indizierte Geometrie für Verarbeitung und Projektdatei, auch bei reinen Kantenkontakten zwischen Volumenkörpern.
-- Der 3MF-Import verarbeitet Geometrie einschließlich Modellreferenzen im Archiv. Materialien, Texturen, Stützstrukturen, geschützte Alternativmodelle und herstellerspezifische Slicer-Einstellungen bleiben außen vor.
-- STL, OBJ und Core-3MF geben Geometrie aus. Kein G-Code, keine Druckerprofile, Texturen, Farben oder Stützen im Export und keine direkte Slicer-Übergabe. Gesamtexport erstellt einzelne Dateien; kein automatisch gepacktes gemeinsames Druckbett. OBJ/STL haben keine verbindliche Maßeinheit; die Zahlen sind Millimeter.
+- Beim Import können konvexe und konkave Öffnungen in ebenen Flächen, eindeutige mikroskopische Nahtspalten und widerspruchsfrei ausrichtbare Flächennormalen repariert werden. Die erweiterte Reparatur akzeptiert nach Zustimmung größere ebene Öffnungen bis zur dokumentierten Größen- und Kantengrenze. Verzweigte, nicht planare und mehrdeutige Defekte werden mit konkretem Befund gemeldet. 3MF-Importe bewahren die indizierte Geometrie für Verarbeitung und Projektdatei, auch bei reinen Kantenkontakten zwischen Volumenkörpern.
+- Der 3MF-Import verarbeitet Geometrie einschließlich Modellreferenzen im Archiv und unterstützte Farbzuweisungen. Beliebige Bemalung, Texturen, Stützstrukturen, geschützte Alternativmodelle und herstellerspezifische Slicer-Einstellungen bleiben außen vor.
+- STL, OBJ und Core-3MF geben Geometrie aus. Der 3MF-Export von Farbteilen erhält ihre Farbe. Kein G-Code, keine Druckerprofile, Texturen oder Stützen im Export und keine direkte Slicer-Übergabe. Gesamtexport erstellt einzelne Dateien; kein automatisch gepacktes gemeinsames Druckbett. OBJ/STL haben keine verbindliche Maßeinheit; die Zahlen sind Millimeter.
 - Keine eingeprägten Teilenummern, bildbasierte PDF-Montageillustrationen, editierbaren Exportkennzeichen oder persistente Undo-Historie.
 - Keine feste RAM-Grenze und keine vollständige CPU-Budgetierung. NumPy/OpenBLAS-Threads werden begrenzt; native Manifold-Parallelität ist nicht vollständig konfigurierbar.
 - Die Anzeigevereinfachung prüft geschlossene Netze, positive/negative Schalen und deren Henkelzahl, höchstens 0,5 % Volumenänderung und begrenzte Oberflächenverschiebung. Das ist keine globale Selbstüberschneidungs- oder Wandstärkenanalyse. Sehr feine Details können in der vereinfachten Anzeige abweichen. Die vollständige Anzeige ist umschaltbar. Dreiecksziele sind weich; Qualitätsgrenzen werden nicht zum Einhalten des Budgets gelockert. Große Originalnetze können weiterhin viel RAM und Zeit benötigen.
@@ -59,9 +71,8 @@ Zusätzlich wurde die WPF-Anwendung gestartet, das Demo-Modell angezeigt und der
 
 1. Adaptive Planung um alternative Schnittbäume und Montagekriterien erweitern; dünne Teilbereiche und lose Baugruppen stärker vermeiden. Reale Schnittpolygone werden bereits für die Platzierung verwendet.
 2. Globale Wandstärken-/Selbstüberschneidungsprüfung und Montagewege mit Drehungen sowie bewegten Teilgruppen ergänzen.
-3. Direkte Drehgriffe für freie Ebenen und visuelles Platzieren von Verbindern ergänzen.
-4. Verformungs- und Drehmontage von Steckclips und Außenschrauben prüfen.
-5. Rendering, Speicherbudget, echte Mesh-Vereinfachung, N95-Messungen und Langzeittests ausbauen.
-6. Signierung, Setup-/Deinstallation auf sauberen Windows-10/11-VMs und Updateverfahren abschließen.
+3. Verformungs- und Drehmontage von Steckclips und Außenschrauben prüfen.
+4. Rendering, Speicherbudget, echte Mesh-Vereinfachung, N95-Messungen und Langzeittests ausbauen.
+5. Signierung, Setup-/Deinstallation auf sauberen Windows-10/11-VMs und Updateverfahren abschließen.
 
 Version 0.9 ergänzt zehn Regressionstests für Schwalbenschwanzvarianten, seitlichen Einschub, geschlossene Hinterschneidung, schräge Flächen, manuelle Platzierung und Druckhinweise. Die C#-Integration prüft Geometrieprozess, Projekt-Roundtrip und PDF-Zuordnung der neuen Daten.

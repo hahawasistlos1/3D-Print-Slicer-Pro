@@ -11,7 +11,7 @@ import manifold3d as md
 import numpy as np
 
 from color_slicing import import_colors, load_colors
-from geometry import load_model, mesh_of, read_3mf, write_stl
+from geometry import load_model, mesh_of, read_3mf, slice_model, write_stl
 from three_mf import CORE, MATERIAL, MODEL_RELATION, read_3mf as read_geometry
 
 
@@ -190,6 +190,54 @@ class ThreeMfTests(unittest.TestCase):
         self.assertAlmostEqual(solid.volume(),8000)
         self.assertEqual(bodies,[])
         self.assertIn('keine getrennten geschlossenen',metadata['issue'])
+
+    def test_painted_planar_seam_creates_closed_color_bodies(self):
+        halves = []
+        for start in (0,10):
+            mesh = mesh_of(md.Manifold.cube((10,20,20)).translate((start,0,0)))
+            halves.append(mesh.triangles[~np.all(mesh.triangles[:,:,0]==10,axis=1)])
+        vertices,faces = np.unique(np.concatenate(halves).reshape(-1,3),axis=0,return_inverse=True)
+        points=''.join(f'<vertex x="{x}" y="{y}" z="{z}"/>' for x,y,z in vertices)
+        triangles=''.join(f'<triangle v1="{a}" v2="{b}" v3="{c}" pid="3" p1="{int(i>=len(halves[0]))}"/>'
+                          for i,(a,b,c) in enumerate(faces.reshape(-1,3)))
+        obj=f'<object id="1" type="model"><mesh><vertices>{points}</vertices><triangles>{triangles}</triangles></mesh></object>'
+        package(self.path,{'3D/assembly.model':model(PALETTE+obj,'<item objectid="1"/>')})
+        solid,metadata,bodies=self.find_colors()
+        self.assertEqual(metadata,{})
+        self.assertAlmostEqual(solid.volume(),8000)
+        self.assertEqual([(color,round(body.volume())) for color,body in bodies],[('#2266EE',4000),('#EE2244',4000)])
+
+    def test_contact_connectors_can_be_enabled_and_disabled(self):
+        color_example(self.path)
+        solid, _, bodies = self.find_colors()
+        settings = {'strategy':'color', 'mode':'separate', 'diameter':5, 'depth':4, 'count':1}
+        with tempfile.TemporaryDirectory(dir=self.path.parent) as folder:
+            root = Path(folder)
+            enabled = slice_model(solid, dict(settings, connectAcrossColors=True), root/'on', color_bodies=bodies)
+            disabled = slice_model(solid, settings, root/'off', color_bodies=bodies)
+            no_connectors = slice_model(solid, dict(settings, connectAcrossColors=True, mode='none'), root/'none', color_bodies=bodies)
+        self.assertTrue(enabled['valid'])
+        self.assertTrue(enabled['assembly']['connected'])
+        self.assertEqual(len(enabled['connectors']), 1)
+        self.assertEqual(enabled['interfaces'][0]['area'], 400)
+        self.assertTrue(enabled['interfaces'][0]['colorBoundary'])
+        self.assertAlmostEqual(enabled['joints'][0]['center'][0], 30)
+        self.assertFalse(disabled['joints'])
+        self.assertFalse(no_connectors['joints'])
+
+    def test_sloping_contact_uses_real_contact_area_and_rejects_gaps(self):
+        first = md.Manifold.cube((20,20,20)).rotate((0,0,32))
+        second = md.Manifold.cube((20,15,20)).translate((20,4,0)).rotate((0,0,32))
+        isolated = md.Manifold.cube((20,20,20)).translate((41,0,0)).rotate((0,0,32))
+        bodies = [('#EE2244',first),('#2266EE',second),('#FFFFFF',isolated)]
+        settings = {'strategy':'color','mode':'integrated','diameter':5,'depth':4,'count':1,'connectAcrossColors':True}
+        with tempfile.TemporaryDirectory(dir=self.path.parent) as folder:
+            result = slice_model(first+second+isolated, settings, folder, color_bodies=bodies)
+        self.assertTrue(result['valid'])
+        self.assertEqual(len(result['interfaces']), 1)
+        self.assertAlmostEqual(result['interfaces'][0]['area'], 300, places=4)
+        self.assertEqual(len(result['joints']), 1)
+        np.testing.assert_allclose(result['joints'][0]['normal'], (np.cos(np.deg2rad(32)),np.sin(np.deg2rad(32)),0.))
 
     def test_worker_splits_color_to_bed_size_after_scaling_and_rotation_and_exports_color(self):
         color_example(self.path,x=55)

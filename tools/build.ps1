@@ -40,6 +40,8 @@ if(-not $SkipTests){
  if($LASTEXITCODE -ne 0){throw 'Tests der Netzreparatur fehlgeschlagen.'}
  & .\runtime\python.exe -B tests\test_mesh_repair.py --example artifacts\mesh-repair-test.3mf
  if($LASTEXITCODE -ne 0){throw 'Reparatur-Testarchiv konnte nicht erzeugt werden.'}
+ & .\runtime\python.exe -B tests\test_mesh_repair.py --large-example artifacts\mesh-repair-large-test.3mf
+ if($LASTEXITCODE -ne 0){throw 'Testarchiv für die erweiterte Reparatur konnte nicht erzeugt werden.'}
  & .\runtime\python.exe -B tests\test_mesh_repair.py --contact-example artifacts\mesh-index-test.3mf
  if($LASTEXITCODE -ne 0){throw 'Testarchiv für indizierte Netze konnte nicht erzeugt werden.'}
  & .\runtime\python.exe -B tests\test_three_mf.py --example artifacts\multipart-3mf-test.3mf

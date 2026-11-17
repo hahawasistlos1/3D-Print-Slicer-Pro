@@ -12,13 +12,32 @@ public static class AssemblyService
   var r=state.Result??throw new InvalidOperationException("Bitte zuerst schneiden.");
   var lines=new List<string>{"3D Print Slicer Pro - Montageplan",state.Model.Name,DateTime.Now.ToString("dd.MM.yyyy HH:mm"),"",$"{r.Parts.Length} Teile / {r.Joints.Length} Verbindungen",$"Material: {r.Settings.Material} / Spiel / Gesamtzugabe: {r.Settings.Tolerance:N2} mm",r.Planning?.Label??"Schnittplan aus älterem Projekt",r.Assembly?.Summary??"Verbindungsgraph nicht ausgewertet",$"Schnittstellen ohne Verbinder: {r.Assembly?.UnconnectedInterfaces??0}",r.Motion?.Summary??"Montagewege nicht geprüft","Nur geradlinige Bewegungen entlang XYZ oder der Verbinderrichtung mit vorbestückten separaten Verbindern.","Keine Reibungs-, Verformungs- oder Festigkeitsprüfung.","",r.Motion?.PathVerified==true?"Nachgewiesene geradlinige Teilfolge:":"Geometrischer Vorschlag (Montagewege nicht vollständig nachgewiesen):",string.Join(", ",r.AssemblyOrder.Select(i=>$"{i:000}")),"", "Zuordnung der Verbinder:"};
   foreach(var j in r.Joints)lines.Add($"{j.Id}: Teil {j.A:000} <-> Teil {j.B:000}, {j.TravelLabel} / {(j.Mode=="separate"?"separat":"an Teil "+j.A.ToString("000")+" integriert")}, {j.KindLabel}: {j.SizeLabel}{(j.AutoSized?" (automatisch verkleinert)":"")}");
+  var specialJoints=r.Joints.Where(j=>j.Kind is "screw" or "clip").ToArray();
+  if(specialJoints.Length>0)
+  {
+   lines.Add("");lines.Add("Rast- und Schraubmontage (Vorschlag für die Passprobe):");
+   foreach(var j in specialJoints)
+   {
+    if(j.Kind=="screw")
+    {
+     lines.Add($"{j.Id}: Teil {j.A:000} und Teil {j.B:000} anlegen, dann vom Sechskantkopf aus eindrehen.");
+     lines.Add(j.ScrewInsertion?.Summary??"Gewindeeingriff: ungeprüft");
+    }
+    else if(j.Mode=="separate")
+     lines.Add($"{j.Id}: Clip an einem der beiden Teile vorbestücken, dann das zweite Teil ansetzen und einrasten.");
+    else
+     lines.Add($"{j.Id}: Teil {j.B:000} auf dem Clip an Teil {j.A:000} ansetzen und einrasten.");
+   }
+  }
+  if(specialJoints.Any(j=>j.ScrewInsertion!=null))
+   lines.Add("Die Stichproben gelten für starre Körper in Endlage, einschließlich der anderen Verbinder. Die Passprobe bleibt erforderlich.");
   if(r.Assembly is {} assembly&&assembly.Groups.Length>1){lines.Add("");lines.Add("Lose Baugruppen:");for(int i=0;i<assembly.Groups.Length;i++)lines.Add($"Gruppe {i+1}: "+string.Join(", ",assembly.Groups[i].Select(p=>$"Teil {p:000}")));}
   if(r.Settings.Strategy=="color")
   {
    lines.Add("");lines.Add("Farbzuordnung:");
    foreach(var part in r.Parts)lines.Add($"Teil {part.Id:000}: {part.Color??"Ohne Farbzuweisung"}");
   }
-  lines.Add("");lines.Add("Schnittstellen:");foreach(var f in r.Interfaces)lines.Add($"{f.Id}: Teil {f.A:000} <-> Teil {f.B:000}, {f.Area:N1} mm², {f.Placed}/{f.Requested} Verbinder");
+  lines.Add("");lines.Add("Schnittstellen:");foreach(var f in r.Interfaces)lines.Add($"{f.Id}: Teil {f.A:000} <-> Teil {f.B:000}, {f.Area:N1} mm², {f.Placed}/{f.Requested} Verbinder{(f.ColorBoundary?" · Farbgrenze":"")}");
   if(r.Motion is {} motion)
   {
    lines.Add("");lines.Add("Montagewege: "+motion.Summary);

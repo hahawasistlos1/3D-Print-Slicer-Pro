@@ -10,6 +10,7 @@ static class Program
  const string AppId="3DPrintSlicerPro";
  const string RegistryPath=@"Software\Microsoft\Windows\CurrentVersion\Uninstall\3DPrintSlicerPro";
  const string ManifestName=".slicerpro-install.json";
+ internal static string DisplayVersion=>typeof(Program).Assembly.GetName().Version!.ToString(3);
  [STAThread]
  static int Main(string[] args)
  {
@@ -69,7 +70,7 @@ static class Program
    CreateShortcut(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.DesktopDirectory),"3D Print Slicer Pro.lnk"),folder);
    var menu=Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Programs),"3D Print Slicer Pro");Directory.CreateDirectory(menu);
    CreateShortcut(Path.Combine(menu,"3D Print Slicer Pro.lnk"),folder);
-   using var key=Registry.CurrentUser.CreateSubKey(RegistryPath);key.SetValue("DisplayName","3D Print Slicer Pro (Vorschau)");key.SetValue("DisplayVersion","0.11.0");key.SetValue("Publisher","3D Print Slicer Pro");key.SetValue("InstallLocation",folder);key.SetValue("DisplayIcon",Path.Combine(folder,"3D Print Slicer Pro.exe"));key.SetValue("UninstallString","\""+Path.Combine(folder,"Uninstall.exe")+"\" --uninstall");key.SetValue("NoModify",1);key.SetValue("NoRepair",1);
+   using var key=Registry.CurrentUser.CreateSubKey(RegistryPath);key.SetValue("DisplayName","3D Print Slicer Pro (Vorschau)");key.SetValue("DisplayVersion",DisplayVersion);key.SetValue("Publisher","3D Print Slicer Pro");key.SetValue("InstallLocation",folder);key.SetValue("DisplayIcon",Path.Combine(folder,"3D Print Slicer Pro.exe"));key.SetValue("UninstallString","\""+Path.Combine(folder,"Uninstall.exe")+"\" --uninstall");key.SetValue("NoModify",1);key.SetValue("NoRepair",1);
   }
   File.WriteAllText(Path.Combine(folder,ManifestName),JsonSerializer.Serialize(new Manifest{AppId=AppId,InstallPath=folder,Files=files.ToArray(),Registered=register}));
  }
@@ -106,7 +107,7 @@ sealed class InstallerForm:Form
  {
   Text="3D Print Slicer Pro · Offline-Setup";ClientSize=new(650,380);StartPosition=FormStartPosition.CenterScreen;BackColor=Color.FromArgb(7,20,30);ForeColor=Color.White;Font=new("Segoe UI",10);FormBorderStyle=FormBorderStyle.FixedDialog;MaximizeBox=false;
   var title=new Label{Text="3D Print Slicer Pro",Font=new("Segoe UI",26,FontStyle.Bold),ForeColor=Color.FromArgb(80,220,255),AutoSize=true,Location=new(28,25)};Controls.Add(title);
-  Controls.Add(new Label{Text="Vorschauversion 0.11.0 · Windows 10/11 (64 Bit)\nAlle Laufzeiten enthalten. Keine Internetverbindung erforderlich.",AutoSize=true,Location=new(30,90)});
+  Controls.Add(new Label{Text=$"Vorschauversion {Program.DisplayVersion} · Windows 10/11 (64 Bit)\nAlle Laufzeiten enthalten. Keine Internetverbindung erforderlich.",AutoSize=true,Location=new(30,90)});
   Controls.Add(new Label{Text="Installationsordner",AutoSize=true,Location=new(30,155)});
   destination.Text=Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),"Programs","3DPrintSlicerPro");destination.SetBounds(30,180,495,30);Controls.Add(destination);
   var browse=new Button{Text="…",Location=new(540,179),Size=new(70,31)};browse.Click+=(_,_)=>{using var dialog=new FolderBrowserDialog{Description="Eigenen Programmordner wählen",UseDescriptionForTitle=true};if(dialog.ShowDialog(this)==DialogResult.OK)destination.Text=Path.Combine(dialog.SelectedPath,"3DPrintSlicerPro");};Controls.Add(browse);

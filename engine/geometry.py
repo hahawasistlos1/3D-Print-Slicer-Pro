@@ -11,16 +11,17 @@ from pathlib import Path
 import numpy as np
 import manifold3d as md
 import trimesh
-from planning import adaptive_partition, common_interface, envelope_radius, face_candidates
+from planning import adaptive_partition, common_interface, envelope_radius, face_candidates, section_body
 from components import material_components
+from color_contacts import contact_interfaces
 from motion import analyze_assembly
 from manual_planes import apply_edits, merged_axis_interfaces, oblique_interfaces, part_key, transform
 from dovetail import dovetail_candidates, make_dovetail
-from placements import selected_positions, trials
-from print_checks import print_checks
-from special_connectors import make_clip, make_screw
+from placements import interface_surface, selected_positions, trials, SURFACE_VERTEX_BUDGET
+from print_checks import print_checks, wall_sample_budgets
+from special_connectors import make_clip, make_screw, sample_screw_insertion, SCREW_SAMPLE_BUDGET
 from three_mf import combine_meshes, read_meshes, read_3mf as read_3mf_geometry
-from mesh_repair import repair_surface, stitch_boundary
+from mesh_repair import ExtendedPlanarRepairAvailable, repair_surface, stitch_boundary
 from indexed_mesh import indexed_path, read_indexed, write_indexed
 
 MAX_TRIANGLES = 4_000_000
@@ -43,7 +44,7 @@ def weld_exact_vertices(mesh):
     return trimesh.Trimesh(points,indices[mesh.faces],process=False)
 
 
-def solid_of(mesh, *, preserve_indices=False, repair_report=None):
+def solid_of(mesh, *, preserve_indices=False, repair_report=None, extended_repair=False, repair_neighbors=None):
     mesh = mesh.copy()
     if not (preserve_indices and mesh.is_watertight and mesh.is_winding_consistent):
         mesh.merge_vertices(digits_vertex=7)
@@ -63,7 +64,7 @@ def solid_of(mesh, *, preserve_indices=False, repair_report=None):
                 if repaired.status()==md.Error.NoError and not repaired.is_empty() and repaired.volume()>0:
                     repair_report['seamsJoined'] = repair_report.get('seamsJoined',0)+1
                     return repaired
-        changes = repair_surface(mesh)
+        changes = repair_surface(mesh,extended=extended_repair,other_meshes=repair_neighbors)
         if len(mesh.faces)>MAX_TRIANGLES:
             raise ValueError('Die Netzreparatur würde die Dreiecksgrenze überschreiten.')
         for key,count in changes.items():
@@ -85,7 +86,8 @@ def read_3mf(path):
     return read_3mf_geometry(path, MAX_TRIANGLES)
 
 
-def load_model(path, scale=1, normalize=True, *, repair_report=None, use_indexed=False, color_source=None):
+def load_model(path, scale=1, normalize=True, *, repair_report=None, use_indexed=False, color_source=None,
+               extended_repair=False):
     path = Path(path)
     if path.stat().st_size > 500_000_000:
         raise ValueError("Datei über 500 MB. Bitte zunächst die Dreieckszahl reduzieren.")
@@ -107,9 +109,14 @@ def load_model(path, scale=1, normalize=True, *, repair_report=None, use_indexed
             # or overlapping bodies. A global vertex weld loses that topology.
             solids = []
             for index,(vertices,faces) in enumerate(meshes,1):
+                def neighbors():
+                    return ((v,f,scale) for other,(v,f) in enumerate(meshes,1) if other!=index)
                 try:
                     solids.append(solid_of(trimesh.Trimesh(vertices*scale,faces,process=False),
-                                           preserve_indices=True,repair_report=repair_report))
+                                           preserve_indices=True,repair_report=repair_report,
+                                           extended_repair=extended_repair,repair_neighbors=neighbors))
+                except ExtendedPlanarRepairAvailable as error:
+                    raise ExtendedPlanarRepairAvailable(f'3MF-Netz {index}/{len(meshes)}: {error}') from error
                 except ValueError as error:
                     raise ValueError(f'3MF-Netz {index}/{len(meshes)}: {error}') from error
             solid = md.Manifold.batch_boolean(solids, md.OpType.Add)
@@ -146,7 +153,8 @@ def load_model(path, scale=1, normalize=True, *, repair_report=None, use_indexed
     if len(mesh.faces) > MAX_TRIANGLES:
         raise ValueError(f"Mehr als {MAX_TRIANGLES:,} Dreiecke. Bitte vor dem Import vereinfachen.")
     mesh.apply_scale(scale)
-    solid = solid_of(mesh,preserve_indices=repair_report is not None,repair_report=repair_report)
+    solid = solid_of(mesh,preserve_indices=repair_report is not None,repair_report=repair_report,
+                     extended_repair=extended_repair)
     lo = np.array(solid.bounding_box()[:3])
     if color_source is not None and path.suffix.lower()=='.3mf':
         color_source['origin']=lo
@@ -245,6 +253,34 @@ def connector_sizes(settings):
     return [(d,max(settings['minDepth'],min(requested[1],requested[1]*d/requested[0]))) for d in diameters]
 
 
+def connector_wall_probe(axis, center, tangent, length, settings):
+    radius=settings['diameter']/2+settings['tolerance']/2+settings['wall']
+    depth=settings['depth']+settings['tolerance']+settings['wall']
+    span=None if length is None else length+settings['tolerance']+2*settings['wall']
+    return connector(axis,center,radius,depth,settings.get('kind','round'),span,tangent)
+
+
+def planning_connector_probe(shape, axis, offset, limit, settings):
+    """Check candidate wall envelopes before choosing a cut."""
+    region=section_body(shape,axis).slice(float(offset))
+    sizes=connector_sizes(settings)
+    trials_per_size=max(1,limit//len(sizes))
+    checked=0
+    for diameter,depth in sizes:
+        sized=dict(settings,diameter=diameter,depth=depth,rectHeight=settings['rectHeight']*diameter/settings['diameter'])
+        length=connector_face_length(sized)
+        candidates=connector_candidates(region,axis,offset,sized)
+        for center,tangent in itertools.islice(candidates,trials_per_size):
+            probe=connector_wall_probe(axis,center,tangent,length,sized)
+            checked+=1
+            outside=probe-shape
+            if outside.status()==md.Error.NoError and outside.volume()<=max(1e-6,probe.volume()*1e-7):
+                return True,checked
+            if checked>=limit:
+                return False,checked
+    return False,checked
+
+
 def fit_order(solid, usable):
     if solid.is_empty() or solid.status()!=md.Error.NoError:return None
     box = np.asarray(solid.bounding_box())
@@ -273,6 +309,8 @@ def validate_settings(s):
     s['thinWallThreshold'] = float(s.get('thinWallThreshold',1))
     if not math.isfinite(s['thinWallThreshold']) or not 0 <= s['thinWallThreshold'] <= 50:
         raise ValueError('Dünnwandschwelle muss zwischen 0 und 50 mm liegen.')
+    if not isinstance(s.get('detailedWallCheck',False),bool):
+        raise ValueError('Ungültige Einstellung für die ausführliche Dünnwandprüfung.')
     if s.get('kind', 'round') not in ('round', 'rect', 'tongue', 'dovetail', 'clip', 'screw'):
         raise ValueError("Dieser Verbindertyp ist noch nicht freigegeben.")
     if s['tongueLength'] <= 0 or (s.get('kind') in ('tongue','dovetail') and s['tongueLength'] < s['diameter']):
@@ -291,6 +329,8 @@ def validate_settings(s):
         raise ValueError("Unbekannte Verbinder-Variante.")
     if s.get('strategy', 'equal') not in ('equal','few','custom','adaptive','color'):
         raise ValueError('Unbekannte Schnittstrategie.')
+    if not isinstance(s.get('connectAcrossColors',False),bool):
+        raise ValueError('Ungültige Einstellung für Verbinder zwischen Farbgruppen.')
     usable = np.array([s['bedX'],s['bedY'],s['bedZ']]) - 2 * s['margin']
     if usable.min() <= 1:
         raise ValueError("Sicherheitsabstand lässt keinen nutzbaren Druckraum übrig.")
@@ -341,22 +381,30 @@ def slice_model(solid, settings, folder, progress=lambda p,m: None, *, indexed=F
     folder = Path(folder)
     folder.mkdir(parents=True, exist_ok=True)
     parts = []
+    score_probe=None
+    if s.get('mode','separate')!='none' and s.get('kind','round') in ('round','rect','tongue'):
+        score_probe=lambda shape,axis,offset,limit: planning_connector_probe(shape,axis,offset,limit,s)
     progress(5, 'Schnittplan aus tatsächlicher Geometrie ermitteln …')
     if s.get('strategy') == 'color':
         if not color_bodies:
             raise ValueError('Für „Nach Farbe trennen“ ein 3MF mit mindestens zwei geschlossenen Farbgruppen laden.')
         cuts = [[],[],[]]
-        planning = {'algorithm':'color-adaptive-v1','evaluatedPlanes':0,'localCuts':[],'budgetReached':False}
+        planning = {'algorithm':'color-adaptive-v1','evaluatedPlanes':0,'localCuts':[],'budgetReached':False,
+                    'connectorProbeChecks':0,'connectorProbeCuts':0,'connectorProbeBudgetReached':False}
         if s.get('cuts'):
             raise ValueError('Nach Farbe trennen unterstützt freie Schnittebenen. Bitte zuvor die Raster-Schnitte löschen.')
         for color,body in color_bodies:
             capacity = MAX_PARTS - len(parts)
             if capacity <= 0:
                 raise ValueError(f'Mehr als {MAX_PARTS} Druckteile nach Farbtrennung.')
-            leaves,color_cuts,detail = adaptive_partition(body,s,usable,capacity,progress)
+            leaves,color_cuts,detail = adaptive_partition(body,s,usable,capacity,progress,
+                probe=score_probe,probe_used=planning['connectorProbeChecks'])
             planning['evaluatedPlanes'] += detail['evaluatedPlanes']
             planning['localCuts'].extend(detail['localCuts'])
             planning['budgetReached'] |= detail['budgetReached']
+            for key in ('connectorProbeChecks','connectorProbeCuts'):
+                planning[key] += detail[key]
+            planning['connectorProbeBudgetReached'] |= detail['connectorProbeBudgetReached']
             for axis in range(3):
                 cuts[axis] = sorted(set(cuts[axis]+color_cuts[axis]))
             for shape,faces in leaves:
@@ -366,7 +414,7 @@ def slice_model(solid, settings, folder, progress=lambda p,m: None, *, indexed=F
             box=np.asarray(part['base'].bounding_box())
             part['cell']=tuple(int(np.searchsorted(cuts[a],(box[a]+box[a+3])/2)) for a in range(3))
     elif s.get('strategy') == 'adaptive':
-        leaves,cuts,planning = adaptive_partition(solid,s,usable,MAX_PARTS,progress)
+        leaves,cuts,planning = adaptive_partition(solid,s,usable,MAX_PARTS,progress,probe=score_probe)
         for shape,faces in leaves:
             box=np.asarray(shape.bounding_box())
             cell=tuple(int(np.searchsorted(cuts[a],(box[a]+box[a+3])/2)) for a in range(3))
@@ -416,8 +464,12 @@ def slice_model(solid, settings, folder, progress=lambda p,m: None, *, indexed=F
     joints, separate, probes, warnings, interfaces = [], [], [], [], []
     if planning['budgetReached']:
         warnings.append('Bewertungsbudget der adaptiven Planung erreicht. Weitere Schnitte wurden geometrisch geprüft, aber ohne Querschnittbewertung gewählt.')
-    if s.get('strategy') == 'color' and s.get('mode','separate')!='none':
-        warnings.append('Im Farbmodus werden Verbinder nur zwischen Druckteilen derselben Farbgruppe gesetzt.')
+    if planning.get('connectorProbeBudgetReached'):
+        warnings.append('Budget für Verbinderproben bei der Schnittplanung erreicht. Verbinder werden in der anschließenden Platzierung weiterhin geprüft.')
+    color_strategy = s.get('strategy') == 'color'
+    across_colors = color_strategy and s.get('connectAcrossColors',False)
+    if color_strategy and not across_colors and s.get('mode','separate')!='none':
+        warnings.append('Verbinder zwischen Farbgruppen sind ausgeschaltet.')
     candidates = []
     min_area = max(1e-8,model_size*model_size*1e-12)
     boxes=[np.asarray(p['base'].bounding_box()) for p in parts]
@@ -443,10 +495,16 @@ def slice_model(solid, settings, folder, progress=lambda p,m: None, *, indexed=F
     candidates.extend(oblique_interfaces(parts, planes, epsilon, min_area))
     if any(part.get('merged') for part in parts):
         candidates.extend(merged_axis_interfaces(parts, cuts, epsilon, min_area))
-    if s.get('strategy') == 'color':
+    if color_strategy:
         candidates=[c for c in candidates if parts[c[0]].get('color')==parts[c[1]].get('color')]
+    if across_colors and s.get('mode','separate') != 'none':
+        boundary_faces = list(contact_interfaces(parts,boxes,epsilon,min_area,progress))
+        candidates.extend(boundary_faces)
+        if not boundary_faces:
+            warnings.append('Keine gemeinsamen ebenen Kontaktflächen zwischen Farbgruppen gefunden.')
     positions=selected_positions(s,candidates,parts) if s.get('mode','separate')!='none' else {}
     candidate_order=sorted(range(len(candidates)),key=lambda index:index not in positions)
+    surface_budget=SURFACE_VERTEX_BUDGET
     for step,pair_idx in enumerate(candidate_order,1):
         ia,ib,axis,offset,region,rotation,face=candidates[pair_idx]
         progress(40 + int(42*step/max(1,len(candidates))), f"Verbinder prüfen · Schnittstelle {step}/{len(candidates)}")
@@ -457,6 +515,10 @@ def slice_model(solid, settings, folder, progress=lambda p,m: None, *, indexed=F
         requested=len(fixed_positions) if fixed_positions else s['count'] if s.get('mode','separate')!='none' else 0
         interface={'id':f'S{pair_idx+1:03}','a':ia+1,'b':ib+1,'axis':axis,'offset':offset,**face,
                    'area':float(region.area()),'requested':requested,'placed':0,'connectors':[]}
+        surface=interface_surface(region,axis,offset,rotation,surface_budget)
+        if surface is not None:
+            interface['surface']=surface
+            surface_budget-=len(surface['vertices'])
         interfaces.append(interface)
         if s.get('mode','separate') == 'none':
             continue
@@ -504,8 +566,8 @@ def slice_model(solid, settings, folder, progress=lambda p,m: None, *, indexed=F
                     pin,socket_a,probe,extra=clip
                     socket_b=socket_a
                 else:
-                    probe = make_connector(center,envelope_r,sized['depth']+s['tolerance']+s['wall'],kind,
-                                           None if length is None else length+s['tolerance']+2*s['wall'],tangent)
+                    probe = connector_wall_probe(axis,center,tangent,length,sized)
+                    if rotation is not None:probe=transform(probe,rotation.T)
                     pin = make_connector(center,radius,sized['depth'],kind,length,tangent)
                     socket_a=socket_b=make_connector(center,radius+s['tolerance']/2,sized['depth']+s['tolerance'],kind,
                                                      None if length is None else length+s['tolerance'],tangent)
@@ -563,7 +625,11 @@ def slice_model(solid, settings, folder, progress=lambda p,m: None, *, indexed=F
     interfaces.sort(key=lambda f:int(f['id'][1:]))
     progress(85, "Druckraum, Netze und Exportgeometrie prüfen …")
     records=[]
-    wall_budget=min(192,24576//(len(parts)+len(separate)))
+    wall_bodies = [p['solid'] for p in parts] + [pin for _,pin in separate]
+    wall_budgets = wall_sample_budgets(wall_bodies,s.get('detailedWallCheck',False))
+    if (s.get('detailedWallCheck',False) and s['thinWallThreshold'] > 0 and
+            any(budget < body.num_tri() for budget,body in zip(wall_budgets,wall_bodies))):
+        warnings.append('Ausführliche Dünnwandprüfung: Stichproben auf insgesamt 200.000 Dreiecke begrenzt.')
     for i,p in enumerate(parts,1):
         shape=p['solid']; data=info(shape); order=fit_order(shape,usable)
         errors=[]
@@ -572,7 +638,7 @@ def slice_model(solid, settings, folder, progress=lambda p,m: None, *, indexed=F
         if len(parts)>1 and not p['connectors'] and s.get('mode')!='none': warnings.append(f"Teil {i:03}: keine Verbindung. Montage manuell prüfen.")
         name=f"Teil_{i:03}.stl"
         write_stl(shape,folder/name,indexed=indexed)
-        checks=print_checks(shape,order,s['thinWallThreshold'],wall_budget)
+        checks=print_checks(shape,order,s['thinWallThreshold'],wall_budgets[i-1])
         if checks['thinSamples']:
             warnings.append(f"Teil {i:03}: Dünnwand-Hinweis, Stichprobe bis {checks['minimumSample']:.3f} mm bei Schwelle {s['thinWallThreshold']:g} mm.")
         color = p.get('color')
@@ -586,12 +652,12 @@ def slice_model(solid, settings, folder, progress=lambda p,m: None, *, indexed=F
         if color is not None:
             records[-1]['color'] = color
     connectors=[]
-    for jid,pin in separate:
+    for index,(jid,pin) in enumerate(separate,len(parts)):
         order=fit_order(pin,usable)
         if order is None:
             raise ValueError(f"Separater Verbinder {jid} passt nicht in den Druckraum.")
         name=f"Verbinder_{jid}.stl"; write_stl(pin,folder/name,indexed=indexed)
-        checks=print_checks(pin,order,s['thinWallThreshold'],wall_budget)
+        checks=print_checks(pin,order,s['thinWallThreshold'],wall_budgets[index])
         if checks['thinSamples']:
             warnings.append(f"Verbinder {jid}: Dünnwand-Hinweis, Stichprobe bis {checks['minimumSample']:.3f} mm.")
         connectors.append({'id':jid,'file':name,'printOrder':list(order),**info(pin),'printChecks':checks})
@@ -623,11 +689,28 @@ def slice_model(solid, settings, folder, progress=lambda p,m: None, *, indexed=F
         warnings.append('Schwalbenschwanznuten bleiben auf einer Seite offen. Die Verbindung benötigt bei Last in Einschubrichtung eine separate Sicherung.')
     if any(j['kind']=='clip' for j in joints):
         warnings.append('Steckclip: Armdehnung aus vereinfachtem Biegemodell. Material, Druckrichtung, Einrasten und Haltekraft per Passprobe prüfen.')
-    if any(j['kind']=='screw' for j in joints):
-        warnings.append('Außenschraube: Teile zuerst anlegen, dann vom Sechskantkopf aus eindrehen. Freier Außenzugang in Endposition geprüft; Drehweg und Gewindefestigkeit per Passprobe prüfen.')
+    screws = [j for j in joints if j['kind']=='screw']
+    if screws:
+        warnings.append('Außenschraube: Teile zuerst anlegen, dann vom Sechskantkopf aus eindrehen. Gewindefestigkeit und Passung am Druckteil prüfen.')
+        if s.get('pathCheck',True):
+            remaining = SCREW_SAMPLE_BUDGET
+            bodies = [(f'Teil {i:03}',p['solid']) for i,p in enumerate(parts,1)]
+            pins = dict(separate)
+            for index,joint in enumerate(screws,1):
+                progress(94,f'Schraubenweg prüfen · {index}/{len(screws)}')
+                obstacles = bodies + [(key,pin) for key,pin in separate if key!=joint['id']]
+                check = sample_screw_insertion(pins[joint['id']],obstacles,joint,remaining)
+                joint['screwInsertion'] = check
+                remaining -= check['testedPoses']
+                if check['status']=='collision':
+                    warnings.append(f"{joint['id']}: Einschraubweg kollidiert bei {check['remainingTravel']:.2f} mm Restweg mit {check['obstacle']}.")
+                elif check['status']=='geometry-error':
+                    warnings.append(f"{joint['id']}: Geometriefehler bei der Prüfung des Einschraubwegs. Passprobe erforderlich.")
+            if any(joint['screwInsertion']['status']=='budget' for joint in screws):
+                warnings.append('Rechenbudget der Schraubenprüfung erreicht. Einige Einschraubwege blieben unvollständig geprüft.')
     if special:
         motion['reason']='flexible-or-rotational-joints'
-    if not motion['checked']:warnings.append('Montagewege wurden nicht geprüft.')
+    if not motion['checked']:warnings.append('Die geradlinige Montagefolge der Teile wurde nicht geprüft.')
     for pair in motion.get('initialCollisions',[]):
         warnings.append('Überschneidung in der Montageposition: '+' ↔ '.join(pair))
         for name in pair:

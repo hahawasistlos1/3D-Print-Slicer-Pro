@@ -25,6 +25,7 @@ public partial class MainWindow : Window
  public MainWindow()
  {
   InitializeComponent();
+  VersionText.Text=$"LOKAL  ●  VORSCHAU {typeof(MainWindow).Assembly.GetName().Version!.ToString(3)}";
   Width=Math.Min(1620,SystemParameters.WorkArea.Width-16);Height=Math.Min(940,SystemParameters.WorkArea.Height-16);
   OriginalView.CameraChanged+=(y,p,d,c)=>PartsView.Sync(y,p,d,c);PartsView.CameraChanged+=(y,p,d,c)=>OriginalView.Sync(y,p,d,c);
   PartsView.PartSelected+=id=>{selected=id;RefreshParts();HighlightThumbnails();};
@@ -33,6 +34,8 @@ public partial class MainWindow : Window
   foreach(var box in new[]{StrategyBox,KindBox,ModeBox,CountBox})box.SelectionChanged+=ParametersChanged;
   OptimizeBox.Checked+=ParametersChanged;OptimizeBox.Unchecked+=ParametersChanged;
   PathCheckBox.Checked+=ParametersChanged;PathCheckBox.Unchecked+=ParametersChanged;AutoSizeBox.Checked+=ParametersChanged;AutoSizeBox.Unchecked+=ParametersChanged;
+  AcrossColorsBox.Checked+=ParametersChanged;AcrossColorsBox.Unchecked+=ParametersChanged;
+  ModeBox.SelectionChanged+=StrategyChanged;
   StrategyChanged(this,null!);
   Loaded+=async (_,_)=>
   {
@@ -66,6 +69,7 @@ public partial class MainWindow : Window
  {
   var s=settings.Clone();s.BedX=Number(BedX,"Druckraum X");s.BedY=Number(BedY,"Druckraum Y");s.BedZ=Number(BedZ,"Druckraum Z");
   s.Margin=Number(MarginBox,"Sicherheitsabstand");s.Target=Number(TargetBox,"Teilgröße");s.Diameter=Number(DiameterBox,"Durchmesser / Breite");s.TongueLength=Number(TongueLengthBox,"Federlänge");s.RectHeight=Number(RectHeightBox,"Zapfenhöhe");s.Depth=Number(DepthBox,"Einstecktiefe");s.Tolerance=Number(ToleranceBox,"Toleranz");s.ClipStrainPercent=Number(ClipStrainBox,"Armdehnungsgrenze");s.ThreadLength=Number(ThreadLengthBox,"Gewindelänge");s.ThreadPitch=Number(ThreadPitchBox,"Gewindesteigung");
+  s.ConnectAcrossColors=AcrossColorsBox.IsChecked==true;
   s.Count=int.Parse(((ComboBoxItem)CountBox.SelectedItem).Content.ToString()!,CultureInfo.InvariantCulture);s.Strategy=TagOf(StrategyBox);s.Kind=TagOf(KindBox);s.Mode=TagOf(ModeBox);s.Optimize=OptimizeBox.IsChecked==true;s.AutoSize=AutoSizeBox.IsChecked==true;s.PathCheck=PathCheckBox.IsChecked==true;return s;
  }
  void ApplySettings(SliceSettings s)
@@ -78,6 +82,7 @@ public partial class MainWindow : Window
   foreach(ComboBoxItem item in CountBox.Items)if(item.Content.ToString()==s.Count.ToString())CountBox.SelectedItem=item;
   OptimizeBox.IsChecked=s.Optimize;
   AutoSizeBox.IsChecked=s.AutoSize;PathCheckBox.IsChecked=s.PathCheck;
+  AcrossColorsBox.IsChecked=s.ConnectAcrossColors;
   PrinterBox.SelectedItem=profiles.FirstOrDefault(p=>Math.Abs(p.X-s.BedX)<1e-6&&Math.Abs(p.Y-s.BedY)<1e-6&&Math.Abs(p.Z-s.BedZ)<1e-6);
   loadingSettings=false;
   if(ready&&current?.Result is {} result){SetResultStatus(result);if(!ParametersMatchResult()){ResultStatus.Text="⚠ Ergebnis nicht aktuell · neu berechnen";ResultStatus.Foreground=Brushes.Orange;}}
@@ -101,8 +106,14 @@ public partial class MainWindow : Window
  void StrategyChanged(object sender,SelectionChangedEventArgs e)
  {
   if(TargetBox!=null&&StrategyBox.SelectedItem is ComboBoxItem item)TargetBox.IsEnabled=item.Tag?.ToString()=="custom";
+  var color=StrategyBox?.SelectedItem is ComboBoxItem {Tag:"color"};
+  if(AcrossColorsBox!=null)
+  {
+   AcrossColorsBox.Visibility=color?Visibility.Visible:Visibility.Collapsed;
+   AcrossColorsBox.IsEnabled=ModeBox?.SelectedItem is not ComboBoxItem {Tag:"none"};
+  }
   if(SliceLabel!=null)
-   SliceLabel.Text=StrategyBox.SelectedItem is ComboBoxItem {Tag:"color"}?"Nach Farbe trennen":"Modell schneiden\n& Verbinder setzen\n(Automatisch)";
+   SliceLabel.Text=color?"Nach Farbe trennen":"Modell schneiden\n& Verbinder setzen\n(Automatisch)";
  }
  void SetResultStatus(SliceResult result)
  {
@@ -145,7 +156,22 @@ public partial class MainWindow : Window
   }
   else await Work(async (token,p)=>
   {
-   var folder=GeometryService.NewFolder();await geometry.RunAsync(new{command="import",input=file,output=folder},folder,p,token);
+   var folder=GeometryService.NewFolder();
+   try
+   {
+    await geometry.RunAsync(new{command="import",input=file,output=folder},folder,p,token);
+   }
+   catch(ExtendedPlanarRepairException error)
+   {
+    var answer=MessageBox.Show(this,error.Message+"\n\nDie erweiterte Reparatur versucht, ebene Öffnungen mit einer Fläche zu schließen. Nutze sie, wenn die Öffnung im Modell unbeabsichtigt ist.\n\nErweiterte Netzreparatur versuchen?",
+     "Erweiterte Netzreparatur",MessageBoxButton.YesNo,MessageBoxImage.Question,MessageBoxResult.No);
+    if(answer!=MessageBoxResult.Yes)
+    {
+     StatusText.Text="Import abgebrochen · bisheriges Modell bleibt erhalten";
+     return;
+    }
+    await geometry.RunAsync(new{command="import",input=file,output=folder,extendedPlanarRepair=true},folder,p,token);
+   }
    var next=ReadSettings();next.Cuts.Clear();next.Edits=[];next.Placements=[];
    var model=Json.Read<ModelRecord>(Path.Combine(folder,"model.json"));
    if(next.Strategy=="color"&&model.ColorSeparation is not {Groups.Length:>0})next.Strategy="adaptive";
@@ -414,9 +440,12 @@ public partial class MainWindow : Window
   if(current?.Result is not {} r)return "Noch keine Druckteile berechnet.\n\nImport → Drucker wählen → Verbinder wählen → Automatisch schneiden → Exportieren.\n\nAdaptive Planung untersucht lokale achsenparallele Schnitte anhand echter Querschnitte. Passende Bereiche bleiben ganz. Gleichmäßiges Raster und manuelle Ebenen bleiben verfügbar.\n\nRunddübel, rechteckige Zapfen, Nut/Feder, Schwalbenschwanz, Steckclips und Außenschrauben sind verfügbar. Steckclips und Außenschrauben erfordern eine Passprobe.";
   var b=new StringBuilder($"{current.Model.Name}\n\nGEOMETRIE\n{r.Parts.Length} Teile · {r.Joints.Length} Verbindungen · {r.Connectors.Length} separate Verbinder\nGeschlossene Netze und Druckraum: {(r.Valid?"bestanden":"FEHLER")}\nMaterial: {r.Settings.Material} · Spiel / Gesamtzugabe: {r.Settings.Tolerance:N2} mm\nWandreserve an Verbindern: {r.Settings.Wall:N1} mm\n\nPRÜFHINWEISE\n");
   if(current.Model.Orientation is {} orientation)b.AppendLine(orientation.Label);
+  if(current.Model.Repair is {} repair)b.AppendLine(repair.Summary);
   foreach(var warning in r.Warnings)b.AppendLine("• "+warning);
   b.AppendLine($"\nSCHNITTPLAN\n{r.Planning?.Label??"Älteres Projekt"} · {r.Planning?.EvaluatedPlanes??0} untersuchte Querschnitte\n{r.Assembly?.Summary??"Verbindungsgraph nicht ausgewertet"}\n{r.Assembly?.UnconnectedInterfaces??0} Schnittstellen ohne Verbinder");
-  b.AppendLine("\nENTWICKLUNGSSTAND\nAdaptive lokale Teilung oder Raster mit sechs Druckraumausrichtungen. Montageprüfung untersucht durchgehende geradlinige Bewegungen entlang XYZ oder der Verbinderrichtung einzelner Teile mit vorbestückten separaten Verbindern. Keine Drehungen, Verformungen, Reibungs- oder Festigkeitsprüfung. Kein allgemeiner Montagebeweis für andere Bewegungen.\n\nTEILE");
+  if(r.Planning is {ConnectorProbeChecks:>0} planning)
+   b.AppendLine($"Schnittplanung · {planning.ConnectorProbeChecks} Verbinderproben · {planning.ConnectorProbeCuts} gewählte Schnitte mit Platz für eine Probe");
+  b.AppendLine("\nENTWICKLUNGSSTAND\nDie Montageprüfung untersucht geradlinige Wege von Teilen mit vorbestückten separaten Verbindern. Bei Außenschrauben prüft sie Stichproben des Gewindeeingriffs in der Endlage der übrigen Körper. Verformung, Reibung und Festigkeit erfordern eine Passprobe.\n\nTEILE");
   foreach(var part in r.Parts)
   {
    b.AppendLine(part.Name+": "+part.SizeLabel+" · "+part.Connectors.Length+" Verbinder"+(part.Printable?"":" · "+string.Join(", ",part.Errors)));
@@ -427,7 +456,12 @@ public partial class MainWindow : Window
    }
   }
   foreach(var connector in r.Connectors.Where(c=>c.PrintChecks!=null))b.AppendLine($"{connector.Id}: {connector.PrintChecks!.Summary}");
-  b.AppendLine("\nMONTAGEZUORDNUNG");foreach(var j in r.Joints)b.AppendLine($"{j.Id}: Teil {j.A:000} ↔ Teil {j.B:000} · {(j.Mode=="separate"?"separat":"integriert an Teil "+j.A.ToString("000"))} · {j.KindLabel} · {j.SizeLabel} · {j.TravelLabel}{(j.ManualPosition?" · manuell platziert":"")}{(j.AutoSized?" · automatisch verkleinert":"")}");
+  b.AppendLine("\nMONTAGEZUORDNUNG");
+  foreach(var j in r.Joints)
+  {
+   b.AppendLine($"{j.Id}: Teil {j.A:000} ↔ Teil {j.B:000} · {(j.Mode=="separate"?"separat":"integriert an Teil "+j.A.ToString("000"))} · {j.KindLabel} · {j.SizeLabel} · {j.TravelLabel}{(j.ManualPosition?" · manuell platziert":"")}{(j.AutoSized?" · automatisch verkleinert":"")}");
+   if(j.Kind=="screw")b.AppendLine("  "+(j.ScrewInsertion?.Summary??"Gewindeeingriff: ungeprüft"));
+  }
   if(r.Motion is {} motion)
   {
    b.AppendLine("\nMONTAGEWEGE\n"+motion.Summary);
@@ -457,7 +491,7 @@ public partial class MainWindow : Window
   if(busy||!CanReplace())return;Remember();current=null;settings.Cuts.Clear();settings.Edits=[];settings.Placements=[];originalMesh=null;displayPreviews=null;projectPath=null;dirty=false;OriginalView.Clear();PartsView.Clear();Thumbnails.Children.Clear();partMeshes.Clear();connectorMeshes.Clear();EmptyLabel.Visibility=Visibility.Visible;
   LengthText.Text="Länge:      —";WidthText.Text="Breite:      —";HeightText.Text="Höhe:       —";TotalText.Text="Kein Modell geladen";MeshText.Text="STL, OBJ und 3MF · offline";ResultStatus.Text="Bereit zum Laden";ResultSummary.Text="";PartsHeading.Text="Teile-Vorschau (0 Teile)";SelectionLabel.Text="Noch keine Druckteile berechnet";Title="3D Print Slicer Pro";StatusText.Text="Neues Projekt";
  }
- void ProjectClick(object sender,RoutedEventArgs e){SetNav(ProjectNav);Dialogs.Report(this,"Projekt", "3D Print Slicer Pro · Vorschauversion 0.11.0\n\nModelle intelligent teilen · vollständig lokal\n\nAlle Berechnungen erfolgen auf echter 3D-Geometrie. Das prozedurale Demo-Modell ist ein eigens erzeugter Drache und entspricht nicht dem Drachen aus dem Referenzbild.\n\nBedienung: linke Maustaste drehen, Mausrad zoomen, rechte Maustaste verschieben. Beide Ansichten drehen synchron.\n\nSTL und OBJ haben keine verbindliche Maßeinheit: Zahlen werden als Millimeter gelesen. 3MF-Einheiten werden umgerechnet.\n\nErweiterte Funktionen und Prüfgrenzen stehen im Prüfbericht und in docs/ENTWICKLUNGSSTAND.md.",("Demo-Drache laden",async()=>{if(!busy&&CanReplace())await LoadDemo();}));}
+ void ProjectClick(object sender,RoutedEventArgs e){SetNav(ProjectNav);Dialogs.Report(this,"Projekt", $"3D Print Slicer Pro · Vorschauversion {typeof(MainWindow).Assembly.GetName().Version!.ToString(3)}\n\nModelle intelligent teilen · vollständig lokal\n\nAlle Berechnungen erfolgen auf echter 3D-Geometrie. Das prozedurale Demo-Modell ist ein eigens erzeugter Drache und entspricht nicht dem Drachen aus dem Referenzbild.\n\nBedienung: linke Maustaste drehen, Mausrad zoomen, rechte Maustaste verschieben. Beide Ansichten drehen synchron.\n\nSTL und OBJ haben keine verbindliche Maßeinheit: Zahlen werden als Millimeter gelesen. 3MF-Einheiten werden umgerechnet.\n\nErweiterte Funktionen und Prüfgrenzen stehen im Prüfbericht und in docs/ENTWICKLUNGSSTAND.md.",("Demo-Drache laden",async()=>{if(!busy&&CanReplace())await LoadDemo();}));}
  void SetNav(Button active)
  {
   foreach(var b in new[]{ProjectNav,CutNav,ConnectorNav,PreviewNav,ExportNav,SettingsNav})
@@ -533,9 +567,28 @@ public partial class MainWindow : Window
   stack.Children.Add(new TextBlock{Text="Mindestdurchmesser / Mindestbreite bei Größenautomatik (mm)",Margin=new(0,12,0,6)});var minDiameter=new TextBox{Text=settings.MinDiameter.ToString("G")};stack.Children.Add(minDiameter);
   stack.Children.Add(new TextBlock{Text="Mindesteinstecktiefe je Seite bei Größenautomatik (mm)",Margin=new(0,12,0,6)});var minDepth=new TextBox{Text=settings.MinDepth.ToString("G")};stack.Children.Add(minDepth);
   stack.Children.Add(new TextBlock{Text="Dünnwand-Stichprobe unter (mm, 0 = aus)",Margin=new(0,12,0,6)});var thinWall=new TextBox{Text=settings.ThinWallThreshold.ToString("G")};stack.Children.Add(thinWall);
+  var detailedWall=new CheckBox{Content="Ausführliche Dünnwandprüfung",IsChecked=settings.DetailedWallCheck,Margin=new(0,8,0,0),
+   ToolTip="Misst an den Dreiecksmittelpunkten, bis zu 200.000 Stichproben pro Berechnung. Bei großen Modellen dauert das länger."};
+  stack.Children.Add(detailedWall);
   stack.Children.Add(new TextBlock{Text="Materialabhängige Startwerte für das Durchmesserspiel sind nur Vorschläge. Eine Passprobe ist erforderlich. Flexible oder spröde Materialien benötigen eine eigene Belastungsprüfung.",TextWrapping=TextWrapping.Wrap,Foreground=Brushes.LightSteelBlue,Margin=new(0,15,0,15)});
   var suggest=new Button{Content="Toleranzvorschlag für Material übernehmen"};suggest.Click+=(_,_)=>ToleranceBox.Text=(material.SelectedItem?.ToString() switch{"PETG"=>.3,"ABS"=>.3,"ASA"=>.3,"TPU"=>.4,"Resin"=>.15,_=>.2}).ToString("G");stack.Children.Add(suggest);
-  var save=new Button{Content="Einstellungen speichern",Margin=new(0,14,0,0),IsDefault=true};save.Click+=(_,_)=>{try{var w=Number(wall,"Wandreserve");var d=Number(minDiameter,"Mindestdurchmesser");var depth=Number(minDepth,"Mindesteinstecktiefe");if(Math.Min(w,Math.Min(d,depth))<=0)throw new ArgumentException("Wandreserve und Mindestmaße müssen positiv sein.");var values=ReadSettings();values.ThinWallThreshold=Number(thinWall,"Dünnwandschwelle");if(values.ThinWallThreshold is <0 or >50)throw new ArgumentException("Dünnwandschwelle muss zwischen 0 und 50 mm liegen.");if(values.AutoSize&&(d>values.Diameter||depth>values.Depth))throw new ArgumentException("Mindestmaße dürfen die gewählten Obergrenzen nicht überschreiten.");settings=values;settings.Material=material.SelectedItem?.ToString()??"PLA";settings.Wall=w;settings.MinDiameter=d;settings.MinDepth=depth;SavePreferences();ParametersChanged(this,new RoutedEventArgs());window.Close();}catch(Exception ex){MessageBox.Show(window,ex.Message);}};stack.Children.Add(save);window.Content=new ScrollViewer{Content=stack,VerticalScrollBarVisibility=ScrollBarVisibility.Auto};window.ShowDialog();
+  var save=new Button{Content="Einstellungen speichern",Margin=new(0,14,0,0),IsDefault=true};
+  save.Click+=(_,_)=>{
+   try
+   {
+    var w=Number(wall,"Wandreserve");var d=Number(minDiameter,"Mindestdurchmesser");var depth=Number(minDepth,"Mindesteinstecktiefe");
+    if(Math.Min(w,Math.Min(d,depth))<=0)throw new ArgumentException("Wandreserve und Mindestmaße müssen positiv sein.");
+    var values=ReadSettings();
+    values.ThinWallThreshold=Number(thinWall,"Dünnwandschwelle");
+    values.DetailedWallCheck=detailedWall.IsChecked==true;
+    if(values.ThinWallThreshold is <0 or >50)throw new ArgumentException("Dünnwandschwelle muss zwischen 0 und 50 mm liegen.");
+    if(values.AutoSize&&(d>values.Diameter||depth>values.Depth))throw new ArgumentException("Mindestmaße dürfen die gewählten Obergrenzen nicht überschreiten.");
+    settings=values;settings.Material=material.SelectedItem?.ToString()??"PLA";settings.Wall=w;settings.MinDiameter=d;settings.MinDepth=depth;
+    SavePreferences();ParametersChanged(this,new RoutedEventArgs());window.Close();
+   }
+   catch(Exception ex){MessageBox.Show(window,ex.Message);}
+  };
+  stack.Children.Add(save);window.Content=new ScrollViewer{Content=stack,VerticalScrollBarVisibility=ScrollBarVisibility.Auto};window.ShowDialog();
  }
  void AdvancedClick(object sender,RoutedEventArgs e)
  {

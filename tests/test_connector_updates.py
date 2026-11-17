@@ -97,6 +97,19 @@ class ConnectorUpdateTests(unittest.TestCase):
         np.testing.assert_allclose(r['joints'][0]['center'],placement['center'],atol=1e-6)
         self.assertTrue(r['motion']['pathVerified'])
 
+    def test_interface_preview_keeps_hole_in_cut_surface(self):
+        shape=md.Manifold.cube((300,100,80))-md.Manifold.cube((300,70,50)).translate((0,15,15))
+        r,_,_=self.slice(shape,diameter=4,depth=4)
+        interface=r['interfaces'][0]
+        surface=interface['surface']
+        vertices=np.array(surface['vertices'])
+        triangles=vertices[np.array(surface['indices']).reshape(-1,3)]
+        self.assertTrue(np.all(vertices[:,0]==interface['offset']))
+        area=np.linalg.norm(np.cross(triangles[:,1]-triangles[:,0],triangles[:,2]-triangles[:,0]),axis=1).sum()/2
+        self.assertAlmostEqual(area,100*80-70*50)
+        centroids=triangles.mean(axis=1)
+        self.assertFalse(np.any((centroids[:,1]>15)&(centroids[:,1]<85)&(centroids[:,2]>15)&(centroids[:,2]<65)))
+
     def test_thin_wall_and_cavity_ceiling(self):
         shell=md.Manifold.cube((8,10,4))-md.Manifold.cube((6,8,2)).translate((1,1,1))
         report=print_checks(shell,[0,1,2],1.5,192)
@@ -119,6 +132,13 @@ class ConnectorUpdateTests(unittest.TestCase):
         self.assertTrue(r['valid'])
         self.assertAlmostEqual(r['parts'][0]['printChecks']['minimumSample'],.7)
         self.assertTrue(any('Dünnwand-Hinweis' in w for w in r['warnings']))
+
+    def test_detailed_wall_check_covers_a_dense_part(self):
+        shape=md.Manifold.cylinder(5,15,circular_segments=80)
+        basic,_,_=self.slice(shape,mode='none')
+        detailed,_,_=self.slice(shape,mode='none',detailedWallCheck=True)
+        self.assertEqual(basic['parts'][0]['printChecks']['testedRays'],192)
+        self.assertEqual(detailed['parts'][0]['printChecks']['testedRays'],shape.num_tri())
 
 
 if __name__=='__main__':

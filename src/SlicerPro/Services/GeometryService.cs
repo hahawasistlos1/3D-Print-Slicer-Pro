@@ -4,6 +4,8 @@ using System.Text;
 using System.Text.Json;
 namespace SlicerPro.Services;
 
+public sealed class ExtendedPlanarRepairException(string message):InvalidOperationException(message) { }
+
 public sealed class GeometryService
 {
  public static string NewFolder()
@@ -28,17 +30,20 @@ public sealed class GeometryService
   start.Environment["OMP_NUM_THREADS"]="2";start.Environment["OPENBLAS_NUM_THREADS"]="1";
   using var process=Process.Start(start)??throw new IOException("Geometrieprozess konnte nicht gestartet werden.");
   using var stop=cancellation.Register(()=>{try {process.Kill(true);}catch{}});
-  var stderr=process.StandardError.ReadToEndAsync();string? failure=null;
+  var stderr=process.StandardError.ReadToEndAsync();string? failure=null;string? failureCode=null;
   while(await process.StandardOutput.ReadLineAsync() is {} line)
   {
    using var data=JsonDocument.Parse(line);
    if(data.RootElement.TryGetProperty("error",out var e)) failure=e.GetString();
+   if(data.RootElement.TryGetProperty("code",out var code)) failureCode=code.GetString();
    if(data.RootElement.TryGetProperty("progress",out var p)) progress?.Report((p.GetInt32(),data.RootElement.GetProperty("message").GetString()??""));
   }
   await process.WaitForExitAsync(CancellationToken.None);var details=await stderr;
   cancellation.ThrowIfCancellationRequested();
   if(process.ExitCode!=0)
   {
+   if(failureCode=="extended-planar-repair"&&failure is not null)
+    throw new ExtendedPlanarRepairException(failure);
    var exception=new InvalidOperationException(failure??"Die Geometrieberechnung ist fehlgeschlagen.");
    App.Log(new Exception(details,exception));throw exception;
   }

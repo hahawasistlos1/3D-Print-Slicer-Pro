@@ -166,6 +166,19 @@ ProjectService.Save(boxState with{ResultFolder=fixedFolder,Result=fixedResult,Se
 var railOpened=ProjectService.Open(railProject);
 Check(railOpened.Settings.Placements.Length==1&&railOpened.Result?.Joints.Single().ManualPosition==true
  &&railOpened.Result.Parts.All(p=>p.PrintChecks is {TestedRays:>0,OverhangArea:not null}),"Projekt: manuelle Position, Schwalbenschwanz und Druckhinweise bleiben gespeichert");
+var savedFace=railOpened.Result!.Interfaces.Single();
+bool surfaceDisplayable=false;
+Exception? surfaceError=null;
+var viewThread=new Thread(()=>{
+ try{surfaceDisplayable=new ModelViewport().DisplayInterface(savedFace,[1,0,0]);}
+ catch(Exception error){surfaceError=error;}
+});
+viewThread.SetApartmentState(ApartmentState.STA);
+viewThread.Start();
+viewThread.Join();
+if(surfaceError!=null)throw new InvalidOperationException("Kontaktfläche konnte in WPF nicht angezeigt werden.",surfaceError);
+Check(surfaceDisplayable&&savedFace.Surface!.Vertices.All(v=>Math.Abs(v[0]-savedFace.Offset)<1e-7),
+ "Verbindereditor: tatsächliche Schnittfläche bleibt im Projekt und kann in WPF angezeigt werden");
 AssemblyService.WritePdf(railOpened,Path.Combine(work,"Montageplan-Schwalbenschwanz.pdf"));
 foreach(var kind in new[]{"clip","screw"})
 {
@@ -182,6 +195,14 @@ foreach(var kind in new[]{"clip","screw"})
  var specialProject=Path.Combine(work,kind=="clip"?"Steckclip.3dps":"Aussenschraube.3dps");
  ProjectService.Save(specialState,specialProject);
  var opened=ProjectService.Open(specialProject);
+ if(kind=="screw")
+ {
+  var plan=Path.Combine(work,"Montageplan-Aussenschraube.pdf");
+  AssemblyService.WritePdf(opened,plan);
+  Check(opened.Result?.Joints.Single().ScrewInsertion is {Status:"samples-clear",TestedPoses:49}
+    &&System.Text.Encoding.Latin1.GetString(File.ReadAllBytes(plan)).Contains("49 Positionen ohne Kollision"),
+   "Schraubenstichprobe: Ergebnis bleibt im Projekt und steht im Montageplan");
+ }
  var displaySpecial=await previewService.PrepareAsync(opened,service);
  var displayed=displaySpecial.Items["connector:"+joint.Id];
  Check(opened.Settings.Kind==kind&&displayed.Info.Watertight&&ModelViewport.LoadMesh(displayed.Path).TriangleIndices.Count>0,
@@ -210,6 +231,22 @@ Check(repaired.Repair?.HolesClosed==1&&repaired.Original.Watertight&&repaired.Or
 var repairProject=Path.Combine(work,"Netzreparatur.3dps");
 ProjectService.Save(new Workspace(repairFolder,null,repaired,null,new SliceSettings()),repairProject);
 Check(ProjectService.Open(repairProject).Model.Repair?.HolesClosed==1,"3MF-Netzreparatur: Prüfvermerk im Projekt gespeichert");
+var largeRepairFolder=GeometryService.NewFolder();
+var largeRepairInput=Path.Combine(root,"artifacts","mesh-repair-large-test.3mf");
+try
+{
+ await service.RunAsync(new{command="import",input=largeRepairInput,output=largeRepairFolder},largeRepairFolder,null,CancellationToken.None);
+ throw new Exception("Größere Öffnung ohne Zustimmung geschlossen.");
+}
+catch(ExtendedPlanarRepairException)
+{
+ Check(!File.Exists(Path.Combine(largeRepairFolder,"model.json")),"Erweiterte Reparatur: Zustimmung erforderlich, kein Zwischenergebnis");
+}
+await service.RunAsync(new{command="import",input=largeRepairInput,output=largeRepairFolder,extendedPlanarRepair=true},
+ largeRepairFolder,null,CancellationToken.None);
+var largeRepairModel=Json.Read<ModelRecord>(Path.Combine(largeRepairFolder,"model.json"));
+Check(largeRepairModel.Repair is {HolesClosed:1,LargeHolesClosed:1}&&largeRepairModel.Original.Watertight
+ &&Math.Abs(largeRepairModel.Original.Volume-1000125)<1e-6,"Erweiterte Reparatur: geschlossener Körper und Prüfvermerk");
 var contactFolder=GeometryService.NewFolder();
 await service.RunAsync(new{command="import",input=Path.Combine(root,"artifacts","mesh-index-test.3mf"),output=contactFolder},
  contactFolder,null,CancellationToken.None);

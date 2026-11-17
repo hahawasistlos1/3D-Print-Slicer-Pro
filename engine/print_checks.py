@@ -3,6 +3,23 @@ import math
 import numpy as np
 
 
+DETAILED_WALL_BUDGET = 200_000
+
+
+def wall_sample_budgets(bodies, detailed):
+    if not detailed:
+        return [min(192,24576//len(bodies))]*len(bodies)
+    counts = [body.num_tri() for body in bodies]
+    # Give small meshes full coverage before sharing the remaining samples
+    # among the larger meshes, without exceeding the total limit.
+    remaining = DETAILED_WALL_BUDGET
+    budgets = [0]*len(counts)
+    for rank,index in enumerate(sorted(range(len(counts)),key=counts.__getitem__)):
+        budgets[index] = min(counts[index], remaining//(len(counts)-rank))
+        remaining -= budgets[index]
+    return budgets
+
+
 def print_checks(solid, order, wall_limit, ray_budget):
     mesh=solid.to_mesh64()
     vertices=np.asarray(mesh.vert_properties)[:,:3]

@@ -110,11 +110,48 @@ public sealed class ModelViewport : Grid
   mesh.Freeze();return mesh;
  }
  GeometryModel3D? planePreview,sourceModel;
+ (Point3D Center,double Yaw,double Pitch)? interfaceFrame;
  public event Action<Point3D>? SurfacePicked;
- public void Clear(){objects.Children.Clear();planePreview=null;sourceModel=null;hitParts.Clear();floor.Children.Clear();floor.Transform=Transform3D.Identity;annotations.Children.Clear();markers.Clear();dimensions.Text="";}
+ public void Clear(){objects.Children.Clear();planePreview=null;sourceModel=null;interfaceFrame=null;hitParts.Clear();floor.Children.Clear();floor.Transform=Transform3D.Identity;annotations.Children.Clear();markers.Clear();dimensions.Text="";}
  public void DisplayOriginal(MeshGeometry3D mesh,MeshInfo info)
  {
   Clear();sourceModel=Add(mesh,Mat(Grey),0);Frame(info);SetGrid(true);
+ }
+ public bool DisplayInterface(InterfaceRecord face,double[] normal)
+ {
+  Clear();
+  if(face.Surface is not {Vertices.Length:>=3 and <=4000,Indices.Length:>=3 and <=24000} surface||
+     surface.Indices.Length%3!=0||surface.Indices.Any(i=>i<0||i>=surface.Vertices.Length)||
+     surface.Vertices.Any(p=>p is not {Length:3}||p.Any(v=>!double.IsFinite(v))))return false;
+  var mesh=new MeshGeometry3D
+  {
+   Positions=new Point3DCollection(surface.Vertices.Select(p=>World(p[0],p[1],p[2]))),
+   TriangleIndices=new Int32Collection(surface.Indices)
+  };
+  mesh.Freeze();
+  var bounds=mesh.Bounds;
+  modelSize=Math.Max(1,Math.Max(bounds.SizeX,Math.Max(bounds.SizeY,bounds.SizeZ)));
+  var direction=new Vector3D(normal[0],normal[2],-normal[1]);
+  if(!double.IsFinite(direction.Length)||direction.Length<1e-9)return false;
+  direction.Normalize();
+  interfaceFrame=(new Point3D(bounds.X+bounds.SizeX/2,bounds.Y+bounds.SizeY/2,bounds.Z+bounds.SizeZ/2),
+    Math.Atan2(direction.X,direction.Z)*180/Math.PI,Math.Clamp(Math.Asin(Math.Clamp(direction.Y,-1,1))*180/Math.PI,-80,80));
+  sourceModel=Add(mesh,Mat(Cyan),0);
+  Reset();
+  return true;
+ }
+ public void ShowInterfacePoints(IEnumerable<double[]> points)
+ {
+  annotations.Children.Clear();markers.Clear();
+  int number=0;
+  foreach(var point in points)
+  {
+   var label=new TextBlock{Text=(++number).ToString(),Foreground=Brushes.White,
+     Background=new SolidColorBrush(Color.FromRgb(54,48,19)),Padding=new Thickness(5,1,5,1)};
+   annotations.Children.Add(label);
+   markers.Add((World(point[0],point[1],point[2]),label));
+  }
+  ProjectMarkers();
  }
  public void ShowPlane(MeshInfo info,ManualEdit? plane)
  {
@@ -256,11 +293,18 @@ public sealed class ModelViewport : Grid
  }
  public void Frame(MeshInfo info)
  {
-  var d=info.Dimensions;center=World(d[0]/2,d[1]/2,d[2]/2);modelSize=d.Max();distance=modelSize*2.45*framingAspect;
+  var d=info.Dimensions;
+  center=info.Bounds is {Length:6} b?World((b[0]+b[3])/2,(b[1]+b[4])/2,(b[2]+b[5])/2):World(d[0]/2,d[1]/2,d[2]/2);
+  modelSize=d.Max();distance=modelSize*2.45*framingAspect;
   dimensions.Text=string.Join(" × ",d.Select(x=>x.ToString("N1")))+" mm\n"+info.Triangles.ToString("N0")+" Dreiecke"+(string.IsNullOrEmpty(MeshNote)?"":"\n"+MeshNote);
   UpdateCamera(true);
  }
- public void Reset(){yaw=-27;pitch=17;distance=modelSize*2.45*framingAspect;UpdateCamera(true);}
+ public void Reset()
+ {
+  if(interfaceFrame is {} face){center=face.Center;yaw=face.Yaw;pitch=face.Pitch;}
+  else{yaw=-27;pitch=17;}
+  distance=modelSize*2.45*framingAspect;UpdateCamera(true);
+ }
  public void SetGrid(bool visible)
  {
   floor.Children.Clear();if(!visible)return;
@@ -284,20 +328,37 @@ public sealed class ModelViewport : Grid
  }
  void ProjectMarkers()
  {
-  if(ActualWidth<=0||ActualHeight<=0)return;
-  var forward=camera.LookDirection;forward.Normalize();var right=Vector3D.CrossProduct(forward,camera.UpDirection);right.Normalize();var up=Vector3D.CrossProduct(right,forward);
-  double focal=ActualWidth/(2*Math.Tan(camera.FieldOfView*Math.PI/360));
+  if(markers.Count==0)return;
+  var axes=ProjectionAxes();
   foreach(var (position,label) in markers)
   {
-   var v=position-camera.Position;double depth=Vector3D.DotProduct(v,forward);
-   if(depth<=0){label.Visibility=Visibility.Collapsed;continue;}
-   double x=ActualWidth/2+focal*Vector3D.DotProduct(v,right)/depth,y=ActualHeight/2-focal*Vector3D.DotProduct(v,up)/depth;
-   label.Visibility=x<0||y<0||x>ActualWidth||y>ActualHeight?Visibility.Collapsed:Visibility.Visible;Canvas.SetLeft(label,x-8);Canvas.SetTop(label,y-10);
+   if(!TryProject(position,axes,out var point)){label.Visibility=Visibility.Collapsed;continue;}
+   label.Visibility=Visibility.Visible;
+   Canvas.SetLeft(label,point.X-8);Canvas.SetTop(label,point.Y-10);
   }
+ }
+ public bool TryProjectModelPoint(double[] point,out Point projected)
+  =>TryProject(World(point[0],point[1],point[2]),ProjectionAxes(),out projected);
+ (Vector3D Forward,Vector3D Right,Vector3D Up,double Focal) ProjectionAxes()
+ {
+  var forward=camera.LookDirection;forward.Normalize();
+  var right=Vector3D.CrossProduct(forward,camera.UpDirection);right.Normalize();
+  return (forward,right,Vector3D.CrossProduct(right,forward),ActualWidth/(2*Math.Tan(camera.FieldOfView*Math.PI/360)));
+ }
+ bool TryProject(Point3D position,(Vector3D Forward,Vector3D Right,Vector3D Up,double Focal) axes,out Point projected)
+ {
+  projected=new();
+  if(ActualWidth<=0||ActualHeight<=0)return false;
+  var relative=position-camera.Position;
+  double depth=Vector3D.DotProduct(relative,axes.Forward);
+  if(depth<=0)return false;
+  projected=new(ActualWidth/2+axes.Focal*Vector3D.DotProduct(relative,axes.Right)/depth,
+    ActualHeight/2-axes.Focal*Vector3D.DotProduct(relative,axes.Up)/depth);
+  return projected.X>=0&&projected.Y>=0&&projected.X<=ActualWidth&&projected.Y<=ActualHeight;
  }
  void Down(object sender,MouseButtonEventArgs e)
  {
-  if(e.ClickCount==2){Reset();return;}last=e.GetPosition(this);dragging=false;CaptureMouse();e.Handled=true;
+  if(e.ClickCount==2){dragging=true;Reset();return;}last=e.GetPosition(this);dragging=false;CaptureMouse();e.Handled=true;
  }
  void Move(object sender,MouseEventArgs e)
  {
@@ -313,7 +374,7 @@ public sealed class ModelViewport : Grid
  void Up(object sender,MouseButtonEventArgs e)
  {
   ReleaseMouseCapture();if(dragging)return;
-  if(SurfacePicked!=null&&Keyboard.Modifiers.HasFlag(ModifierKeys.Alt))
+  if(SurfacePicked!=null&&e.ChangedButton==MouseButton.Left&&(interfaceFrame!=null||Keyboard.Modifiers.HasFlag(ModifierKeys.Alt)))
   {
    VisualTreeHelper.HitTest(viewport,null,r=>
    {

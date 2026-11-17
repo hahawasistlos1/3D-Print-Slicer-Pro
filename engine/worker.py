@@ -10,6 +10,7 @@ from preview import prepare_previews
 from orientation import write_rotated_model
 from indexed_mesh import indexed_path
 from color_slicing import import_colors, load_colors, save_colors, volume_matches
+from mesh_repair import ExtendedPlanarRepairAvailable
 
 
 def emit(progress, message):
@@ -37,7 +38,11 @@ def main():
                 indexed=stream.read(80).lstrip().lower().startswith(b'solid')
         scale=request.get('scale',1)
         source_colors={} if command=='import' and source.suffix.lower()=='.3mf' else None
-        shape=demo_dragon() if command=='demo' else load_model(source,scale,repair_report=repair,use_indexed=command=='scale',color_source=source_colors)
+        extended_repair=request.get('extendedPlanarRepair',False)
+        if not isinstance(extended_repair,bool) or (extended_repair and command!='import'):
+            raise ValueError('Die erweiterte Netzreparatur ist nur beim Import verfügbar.')
+        shape=demo_dragon() if command=='demo' else load_model(source,scale,repair_report=repair,
+            use_indexed=command=='scale',color_source=source_colors,extended_repair=extended_repair)
         write_stl(shape,folder/'original.stl',indexed=indexed or bool(repair))
         data={'name':request.get('name',Path(request.get('input','Demo-Drache')).stem),'original':info(shape)}
         if repair:
@@ -91,6 +96,9 @@ def main():
 
 if __name__=='__main__':
     try: main()
+    except ExtendedPlanarRepairAvailable as exc:
+        print(json.dumps({'error':str(exc),'code':'extended-planar-repair'},ensure_ascii=False),flush=True)
+        sys.exit(1)
     except Exception as exc:
         print(json.dumps({'error':str(exc)},ensure_ascii=False),flush=True)
         traceback.print_exc(file=sys.stderr)

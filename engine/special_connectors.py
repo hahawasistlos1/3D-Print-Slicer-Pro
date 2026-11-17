@@ -110,3 +110,46 @@ def make_screw(a, b, axis, center, offset, rotation, settings, outside):
     female=place(thread_profile(radius,pitch,-.02*pitch,length+play,flank,clearance=play/2))
     return pin,bore,female,[through_probe,tap_probe,head_space],{
         'pitch':pitch,'threadLength':length,'gripLength':-entry,'headDiameter':head_radius*2}
+
+
+SCREW_SAMPLE_BUDGET = 180
+SCREW_SAMPLES_PER_TURN = 8
+
+
+def sample_screw_insertion(pin, obstacles, joint, budget):
+    """Check rigid screw poses with all printed bodies in assembly position."""
+    pitch = joint['pitch']
+    length = joint['threadLength']
+    origin = np.asarray(joint['center'])
+    rotation = seam_frame(joint['axis'], np.asarray(joint['frame']) if 'frame' in joint else None)
+    normal = rotation[2]
+    screw = transform(pin.translate(-origin),rotation)
+    steps = math.ceil(length/pitch*SCREW_SAMPLES_PER_TURN)
+    distance = length/steps
+    threshold = max(1e-6,pin.volume()*1e-7)
+    boxes = [(name,body,np.asarray(body.bounding_box())) for name,body in obstacles]
+    result = {'status':'samples-clear','testedPoses':0,'plannedPoses':steps+1,
+              'maxAngleStep':360*distance/pitch,'maxAxialStep':distance}
+    # Start with the tip at the entrance to the threaded hole. The right-hand
+    # geometry advances by one pitch for one positive turn about the local axis.
+    for withdrawal in np.linspace(length,0,steps+1):
+        if result['testedPoses']>=budget:
+            result['status']='budget'
+            return result
+        angle = -360*(withdrawal/pitch % 1)
+        local = screw.rotate((0,0,angle))
+        placed = transform(local,rotation.T).translate(origin-withdrawal*normal)
+        box = np.asarray(placed.bounding_box())
+        result['testedPoses'] += 1
+        for name,body,bounds in boxes:
+            if not np.all(np.minimum(box[3:],bounds[3:])>np.maximum(box[:3],bounds[:3])):
+                continue
+            overlap = placed ^ body
+            if overlap.status()!=md.Error.NoError:
+                result.update(status='geometry-error', obstacle=name, remainingTravel=float(withdrawal))
+                return result
+            volume = overlap.volume()
+            if volume>threshold:
+                result.update(status='collision', obstacle=name, remainingTravel=float(withdrawal), overlapVolume=float(volume))
+                return result
+    return result

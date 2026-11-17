@@ -7,10 +7,12 @@ public sealed class SliceSettings
  public double BedX {get;set;}=220; public double BedY {get;set;}=220; public double BedZ {get;set;}=250;
  public double Margin {get;set;}=.2; public double Target {get;set;}=220; public bool Optimize {get;set;}=true;
  public string Strategy {get;set;}="adaptive"; public string Kind {get;set;}="round"; public string Mode {get;set;}="separate";
+ public bool ConnectAcrossColors {get;set;}
  public double Diameter {get;set;}=10; public double Depth {get;set;}=15; public double Tolerance {get;set;}=.2; public double Wall {get;set;}=2;
  public double TongueLength {get;set;}=40;
  public double RectHeight {get;set;}
  public double ThinWallThreshold {get;set;}=1;
+ public bool DetailedWallCheck {get;set;}
  public double ClipStrainPercent {get;set;}=3;
  public double ThreadPitch {get;set;}=2;
  public double ThreadLength {get;set;}=12;
@@ -27,6 +29,7 @@ public sealed class ConnectorPlacement
  public string AKey {get;set;}="";
  public string BKey {get;set;}="";
  public double[] Center {get;set;}=[];
+ public bool ColorBoundary {get;set;}
 }
 public sealed class ManualEdit
 {
@@ -52,10 +55,12 @@ public sealed class ColorSeparationRecord
 public sealed class MeshRepairRecord
 {
  public int HolesClosed {get;set;}
+ public int LargeHolesClosed {get;set;}
  public int FacesReoriented {get;set;}
  public int SeamsJoined {get;set;}
  public string Summary=>"Importreparatur · "+string.Join(" · ",new[]{
-  HolesClosed>0?$"{HolesClosed} kleine Öffnung(en) geschlossen":null,
+  HolesClosed>0?$"{HolesClosed} ebene Öffnung(en) geschlossen":null,
+  LargeHolesClosed>0?$"davon {LargeHolesClosed} mit erweiterter Reparatur":null,
   FacesReoriented>0?$"{FacesReoriented} Flächen ausgerichtet":null,
   SeamsJoined>0?$"Numerische Nähte an {SeamsJoined} Netz(en) geschlossen":null
  }.OfType<string>());
@@ -101,6 +106,8 @@ public sealed class CutFaceRecord
 public sealed class PlanningRecord
 {
  public string Algorithm {get;set;}="grid-axis-v1";public int EvaluatedPlanes {get;set;} public bool BudgetReached {get;set;}
+ public int ConnectorProbeChecks {get;set;}
+ public int ConnectorProbeCuts {get;set;}
  public string Label=>Algorithm.StartsWith("color")?"Nach Farbe getrennt":Algorithm.StartsWith("adaptive")?"Adaptiv · lokale Schnitte":"Achsenparalleles Raster";
  // Preserve the geometric planning record when exporting a saved project.
  [System.Text.Json.Serialization.JsonExtensionData] public Dictionary<string,JsonElement>? Extra {get;set;}
@@ -113,8 +120,15 @@ public sealed class AssemblyRecord
 public sealed class InterfaceRecord
 {
  public double[]? Normal {get;set;}
+ public InterfaceSurfaceRecord? Surface {get;set;}
+ public bool ColorBoundary {get;set;}
  public int? Plane {get;set;}
  public string Id {get;set;}="";public int A {get;set;} public int B {get;set;} public int Axis {get;set;} public double Offset {get;set;} public double Area {get;set;} public int Placed {get;set;} public int Requested {get;set;}public string[] Connectors {get;set;}=[];
+}
+public sealed class InterfaceSurfaceRecord
+{
+ public double[][] Vertices {get;set;}=[];
+ public int[] Indices {get;set;}=[];
 }
 public sealed class ConnectorRecord { public string Id {get;set;}=""; public string File {get;set;}=""; public int[]? PrintOrder {get;set;} public PrintCheckRecord? PrintChecks {get;set;} }
 public sealed class JointRecord
@@ -130,6 +144,7 @@ public sealed class JointRecord
  public double? Length {get;set;} public int? TangentAxis {get;set;}
  public double? Pitch {get;set;}
  public double? ThreadLength {get;set;}
+ public ScrewInsertionRecord? ScrewInsertion {get;set;}
  public double? GripLength {get;set;}
  public double? HeadDiameter {get;set;}
  public double? ClipStrainPercent {get;set;}
@@ -145,6 +160,23 @@ public sealed class JointRecord
   :Kind is "tongue" or "dovetail"?$"{Diameter:N2} × {Length:N2} × {2*Depth:N2} mm (B × L × T)"
   :Kind=="rect"?$"{Diameter:N2} × {(Length??Diameter):N2} × {2*Depth:N2} mm (B × H × T)"
   :$"{Diameter:N2} × {2*Depth:N2} mm";
+}
+public sealed class ScrewInsertionRecord
+{
+ public string Status {get;set;}="";
+ public int TestedPoses {get;set;}
+ public int PlannedPoses {get;set;}
+ public double MaxAngleStep {get;set;}
+ public double? RemainingTravel {get;set;}
+ public string? Obstacle {get;set;}
+ public string Summary=>Status switch
+ {
+  "samples-clear"=>$"Gewindeeingriff: {TestedPoses} Positionen ohne Kollision (bis {MaxAngleStep:N0}° Abstand)",
+  "collision"=>$"Gewindeeingriff: Kollision mit {Obstacle} bei {RemainingTravel:N2} mm Restweg",
+  "budget"=>$"Gewindeeingriff: {TestedPoses}/{PlannedPoses} Positionen geprüft (Rechenbudget)",
+  "geometry-error"=>"Gewindeeingriff: Prüfung wegen Geometriefehler abgebrochen",
+  _=>"Gewindeeingriff: ungeprüft"
+ };
 }
 public sealed class MotionRecord
 {

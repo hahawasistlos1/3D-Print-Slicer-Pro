@@ -58,6 +58,21 @@ class PlanningTests(unittest.TestCase):
         self.assertTrue(all(not 130<v<170 for v in offsets))
         self.assertGreater(len(result['joints']),0)
 
+    def test_planning_detects_cavity_between_sampled_cross_sections(self):
+        shape=md.Manifold.cube((300,18,18))-md.Manifold.cube((1,16,16)).translate((154,1,1))
+        settings={'bedX':165,'bedY':100,'bedZ':100,'optimize':False,'diameter':6,'depth':8,'wall':2,'count':1}
+        with patch('planning.MAX_CONNECTOR_PROBES',0):
+            fallback=self.run_slice(shape,**settings)
+        self.assertEqual(fallback['cuts'][0],[150.])
+        self.assertFalse(fallback['joints'])
+        self.assertTrue(fallback['planning']['connectorProbeBudgetReached'])
+        result=self.run_slice(shape,**settings)
+        self.assertTrue(result['valid'])
+        self.assertEqual(len(result['joints']),1)
+        self.assertTrue(result['assembly']['connected'])
+        self.assertEqual(result['planning']['connectorProbeCuts'],1)
+        self.assertGreater(result['planning']['connectorProbeChecks'],0)
+
     def test_hollow_cross_section_finds_actual_wall_positions(self):
         shape=md.Manifold.cube((300,100,80))-md.Manifold.cube((280,80,60)).translate((10,10,10))
         result=self.run_slice(shape,diameter=4,depth=6,wall=1)

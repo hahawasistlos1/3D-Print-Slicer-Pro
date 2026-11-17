@@ -1,12 +1,18 @@
 """Conservative source-mesh repair. Internal preview and export stay strict."""
 from collections import deque
 
+import manifold3d as md
 import numpy as np
 
 
 MAX_HOLES = 64
 MAX_LOOP_EDGES = 32
+EXTENDED_LOOP_EDGES = 96
 MAX_WINDING_FACES = 500_000
+
+
+class ExtendedPlanarRepairAvailable(ValueError):
+    """A larger planar opening can be examined in the expanded import mode."""
 
 
 def edge_groups(mesh):
@@ -113,12 +119,73 @@ def cross2(a,b):
     return a[...,0]*b[...,1]-a[...,1]*b[...,0]
 
 
-def patch_for_loop(mesh, ids, surrounding, diameter_limit, tolerance):
+def validate_simple_polygon(polygon, vectors, lengths, tolerance):
+    for i, (a, u) in enumerate(zip(polygon, vectors)):
+        b = a + u
+        for j in range(i+2, len(polygon)):
+            if i == 0 and j == len(polygon)-1:
+                continue
+            c, v = polygon[j], vectors[j]
+            d = c + v
+            if np.any(np.minimum(np.maximum(a,b),np.maximum(c,d)) <
+                      np.maximum(np.minimum(a,b),np.minimum(c,d))-tolerance):
+                continue
+            ab = cross2(u,np.asarray([c,d])-a)/lengths[i]
+            cd = cross2(v,np.asarray([a,b])-c)/lengths[j]
+            if (ab.min()<=tolerance and ab.max()>=-tolerance and
+                    cd.min()<=tolerance and cd.max()>=-tolerance):
+                raise ValueError('Offene Randlinie überschneidet sich oder berührt sich selbst.')
+
+
+def clip_section(section, polygon, sign, margin):
+    for a,b in zip(polygon,np.roll(polygon,-1,axis=0)):
+        edge=b-a
+        distance=sign*cross2(edge,np.asarray(section)-a)/np.linalg.norm(edge)-margin
+        clipped=[]
+        for i,p in enumerate(section):
+            q=section[i-1]
+            dp,dq=distance[i],distance[i-1]
+            if (dp>=0)!=(dq>=0):
+                clipped.append(p+(q-p)*dp/(dp-dq))
+            if dp>=0:
+                clipped.append(p)
+        section=clipped
+        if not section:
+            break
+    return section
+
+
+def hits_patch(section, polygon, vectors, lengths, triangles, convex, tolerance):
+    if not section:
+        return False
+    if convex:
+        return bool(clip_section(section,polygon,1,tolerance))
+    for triangle in triangles:
+        clipped=clip_section(section,polygon[triangle],1,0)
+        if not clipped:
+            continue
+        # Contacts only on the original hole rim are allowed. A hit along a
+        # triangulation diagonal still crosses the interior of the patch.
+        points=np.vstack((clipped,np.mean(clipped,axis=0)))
+        delta=points[:,None,:]-polygon
+        t=np.clip(np.einsum('ijk,jk->ij',delta,vectors)/lengths**2,0,1)
+        if np.any(np.linalg.norm(delta-t[:,:,None]*vectors,axis=2).min(axis=1)>tolerance):
+            return True
+    return False
+
+
+def patch_for_loop(mesh, ids, surrounding, tolerance, *, extended, extent, other_meshes):
     points=mesh.vertices[ids]
     origin=points.mean(axis=0)
     shifted=points-origin
-    if len(points)>MAX_LOOP_EDGES or np.linalg.norm(points[:,None]-points[None,:],axis=2).max()>diameter_limit:
-        raise ValueError(f'Offene Randlinie zu groß für die automatische Reparatur (maximal {diameter_limit:.2f} mm und {MAX_LOOP_EDGES} Kanten).')
+    small_limit=min(10.,extent*.12)
+    large_limit=min(40.,extent*.35)
+    if len(points)>EXTENDED_LOOP_EDGES:
+        raise ValueError(f'Offene Randlinie zu groß für die Netzreparatur (maximal {EXTENDED_LOOP_EDGES} Kanten).')
+    diameter=np.linalg.norm(points[:,None]-points[None,:],axis=2).max()
+    if diameter>large_limit:
+        raise ValueError(f'Offene Randlinie zu groß für die Netzreparatur (maximal {large_limit:.2f} mm).')
+    large = diameter>small_limit or len(points)>MAX_LOOP_EDGES
     _,_,basis=np.linalg.svd(shifted,full_matrices=False)
     normal=basis[2]
     adjacent=mesh.vertices[mesh.faces[surrounding]]
@@ -128,26 +195,40 @@ def patch_for_loop(mesh, ids, surrounding, diameter_limit, tolerance):
     vectors=np.roll(polygon,-1,axis=0)-polygon
     lengths=np.linalg.norm(vectors,axis=1)
     area2=cross2(polygon,np.roll(polygon,-1,axis=0)).sum()
-    sign=np.sign(area2)
     if abs(area2)<tolerance**2 or np.any(lengths<=tolerance):
         raise ValueError('Offene Randlinie ist geometrisch uneindeutig.')
-    # A strictly convex polygon must have all other vertices inside every edge.
-    distances=sign*cross2(vectors[:,None],polygon[None,:]-polygon[:,None])/lengths[:,None]
-    corners=np.arange(len(ids))
-    distances[corners,corners]=np.inf
-    distances[corners,(corners+1)%len(ids)]=np.inf
-    if np.any(distances<=tolerance):
-        raise ValueError('Offene Randlinie ist konkav, verzweigt oder überschneidet sich.')
+    if area2<0:
+        polygon[:,1]*=-1
+        vectors[:,1]*=-1
+        basis[1]*=-1
+        area2=-area2
+    validate_simple_polygon(polygon,vectors,lengths,tolerance)
+    if large and not extended:
+        raise ExtendedPlanarRepairAvailable(
+            f'Ebene Öffnung mit {diameter:.2f} mm und {len(points)} Randkanten. '
+            'Sie überschreitet die Grenze der normalen Importreparatur.')
+    triangles=np.asarray(md.triangulate([polygon],tolerance,False))
+    if triangles.shape!=(len(ids)-2,3) or np.any(triangles<0) or np.any(triangles>=len(ids)):
+        raise ValueError('Offene Randlinie kann nicht eindeutig trianguliert werden.')
+    flat_triangles=polygon[triangles]
+    areas=cross2(flat_triangles[:,1]-flat_triangles[:,0],flat_triangles[:,2]-flat_triangles[:,0])
+    if np.any(areas<=tolerance**2) or abs(areas.sum()-area2)>max(tolerance**2,area2*1e-8):
+        raise ValueError('Offene Randlinie kann nicht eindeutig trianguliert werden.')
+    convex=bool(np.all(cross2(vectors,np.roll(vectors,-1,axis=0))>0))
 
     lower=points.min(axis=0)-tolerance
     upper=points.max(axis=0)+tolerance
     possible=[]
-    for start in range(0,len(mesh.faces),65536):
-        triangles=mesh.vertices[mesh.faces[start:start+65536]]
-        overlap=np.all(triangles.max(axis=1)>=lower,axis=1)&np.all(triangles.min(axis=1)<=upper,axis=1)
-        possible.extend(triangles[overlap])
-        if len(possible)>20000:
-            raise ValueError('Zu viele nahe Flächen für eine eindeutige Reparatur.')
+    sources=[(mesh.vertices,mesh.faces,1)]
+    if large and other_meshes is not None:
+        sources.extend(other_meshes())
+    for vertices,faces,scale in sources:
+        for start in range(0,len(faces),65536):
+            chunk=vertices[faces[start:start+65536]]*scale
+            overlap=np.all(chunk.max(axis=1)>=lower,axis=1)&np.all(chunk.min(axis=1)<=upper,axis=1)
+            possible.extend(chunk[overlap])
+            if len(possible)>20000:
+                raise ValueError('Zu viele nahe Flächen für eine eindeutige Reparatur.')
     # Clip each triangle against the interior of the cap and its plane.
     # Boundary contacts are allowed, crossings of the interior are ambiguous.
     for face in possible:
@@ -163,47 +244,35 @@ def patch_for_loop(mesh, ids, surrounding, diameter_limit, tolerance):
             for i,j in ((0,1),(1,2),(2,0)):
                 if height[i]*height[j]<0:
                     section.append(flat[i]+(flat[j]-flat[i])*(height[i]/(height[i]-height[j])))
-        for corner,vector,length in zip(polygon,vectors,lengths):
-            clipped=[]
-            for i,p in enumerate(section):
-                q=section[i-1]
-                dp=sign*cross2(vector,p-corner)/length-tolerance
-                dq=sign*cross2(vector,q-corner)/length-tolerance
-                if (dp>=0)!=(dq>=0):
-                    clipped.append(p+(q-p)*dp/(dp-dq))
-                if dp>=0:
-                    clipped.append(p)
-            section=clipped
-            if not section:
-                break
-        if section:
+        if hits_patch(section,polygon,vectors,lengths,triangles,convex,tolerance):
             raise ValueError('Eine vorhandene Fläche kreuzt die geplante Reparatur.')
-    return np.column_stack((np.full(len(ids)-2,ids[0]),ids[1:-1],ids[2:]))
+    return ids[triangles],large
 
 
-def repair_surface(mesh):
+def repair_surface(mesh, *, extended=False, other_meshes=None):
     order,starts,counts=edge_groups(mesh)
     if np.any(counts>2):
         raise ValueError(f'Nicht mannigfaltiges Netz: {int((counts>2).sum()):,} Kanten gehören zu mehr als zwei Flächen.')
     opened=int((counts==1).sum())
-    if opened>MAX_HOLES*MAX_LOOP_EDGES:
+    if opened>MAX_HOLES*EXTENDED_LOOP_EDGES:
         raise ValueError(f'Das Netz ist offen ({opened:,} Randkanten). Zu viele offene Stellen für die automatische Reparatur.')
     flipped=0 if mesh.is_winding_consistent else fix_winding(mesh)
     if not opened:
         return {'holesClosed':0,'facesReoriented':flipped}
     order,starts,counts=edge_groups(mesh)
     extent=float(mesh.extents.max())
-    diameter_limit=min(10.,extent*.12)
     tolerance=min(.001,max(1e-7,extent*1e-7))
-    caps=[]
+    closed=large_closed=0
     try:
         for ids,faces in boundary_loops(mesh,order[starts[counts==1]]):
-            if len(caps)>=MAX_HOLES:
+            if closed>=MAX_HOLES:
                 raise ValueError('Zu viele einzelne offene Stellen.')
-            cap=patch_for_loop(mesh,ids,faces,diameter_limit,tolerance)
-            caps.append(cap)
+            cap,large=patch_for_loop(mesh,ids,faces,tolerance,extended=extended,extent=extent,other_meshes=other_meshes)
+            closed+=1
+            large_closed+=int(large)
             # Include each accepted cap when checking later caps for crossings.
             mesh.faces=np.vstack((mesh.faces,cap))
     except ValueError as error:
-        raise ValueError(f'Das Netz ist offen ({opened:,} Randkanten). {error}') from error
-    return {'holesClosed':len(caps),'facesReoriented':flipped}
+        error_type=ExtendedPlanarRepairAvailable if isinstance(error,ExtendedPlanarRepairAvailable) else ValueError
+        raise error_type(f'Das Netz ist offen ({opened:,} Randkanten). {error}') from error
+    return {'holesClosed':closed,'largeHolesClosed':large_closed,'facesReoriented':flipped}
